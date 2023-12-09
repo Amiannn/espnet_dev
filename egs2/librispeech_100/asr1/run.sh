@@ -7,18 +7,24 @@ set -o pipefail
 
 train_set="train_clean_100"
 valid_set="dev"
-test_sets="test_clean test_other dev_clean dev_other"
+# test_sets="test_clean test_other dev_clean dev_other"
+test_sets="test_clean"
 
-asr_config=conf/train_asr.yaml
-inference_config=conf/decode_asr.yaml
+# asr_config=conf/tuning/train_asr_transducer_conformer_e15_linear1024.yaml
+# inference_config=conf/tuning/decode_transducer.yaml
+# inference_config=conf/decode_asr.yaml
+asr_config=conf/exp/train_asr_transducer_conformer_e15_linear1024_ctc_dummy.yaml
+# inference_config=conf/decode_asr_test.yaml
+inference_config=conf/decode_asr_greedy_ctc_test.yaml
 
-./asr.sh \
+CUDA_VISIBLE_DEVICES=0 ./asr.sh \
     --lang en \
     --ngpu 1 \
     --nj 16 \
-    --gpu_inference true \
-    --inference_nj 2 \
-    --nbpe 5000 \
+    --gpu_inference false \
+    --inference_nj 10 \
+    --nbpe 600 \
+    --suffixbpe suffix \
     --max_wav_duration 30 \
     --speed_perturb_factors "0.9 1.0 1.1" \
     --audio_format "flac.ark" \
@@ -30,4 +36,6 @@ inference_config=conf/decode_asr.yaml
     --valid_set "${valid_set}" \
     --test_sets "${test_sets}" \
     --lm_train_text "data/${train_set}/text" \
-    --bpe_train_text "data/${train_set}/text" "$@"
+    --bpe_train_text "data/${train_set}/text" "$@" \
+    --asr_args "--use_wandb true" \
+    --inference_asr_model "valid.loss.ave_10best.pth"

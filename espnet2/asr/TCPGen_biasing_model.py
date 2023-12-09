@@ -81,6 +81,8 @@ class ESPnetTCPGenBiasingASRModel(ESPnetASRModel):
         bmaxlen: int = 100,
         bdrop: float = 0.0,
         bpemodel: str = "",
+        freeze_enc_dec: bool = False,
+        biasing_type: str = "tcpgen",
     ):
         super().__init__(
             vocab_size,
@@ -121,6 +123,7 @@ class ESPnetTCPGenBiasingASRModel(ESPnetASRModel):
                 charlist=token_list,
             )
         self.biasing = biasing
+        self.biasing_type = biasing_type
         self.biasingsche = biasingsche
         self.GNN = biasingGNN
 

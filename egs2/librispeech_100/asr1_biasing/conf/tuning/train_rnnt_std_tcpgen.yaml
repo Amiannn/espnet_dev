@@ -29,6 +29,7 @@ decoder_conf:
 joint_net_conf:
     joint_space_size: 320
 
+model: tcpgen_espnet
 model_conf:
     ctc_weight: 0.0
     report_cer: False
@@ -39,7 +40,7 @@ model_conf:
     bdrop: 0.0
     battndim: 256
     biasing: true
-    bsche: 30
+    biasingsche: 30
     deepbiasing: true
 
 frontend_conf:
@@ -50,8 +51,8 @@ frontend_conf:
 seed: 2022
 num_workers: 8
 batch_type: numel
-batch_bins: 6000000
-accum_grad: 8
+batch_bins: 1500000
+accum_grad: 32
 max_epoch: 70
 patience: none
 init: none

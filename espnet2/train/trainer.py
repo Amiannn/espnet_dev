@@ -289,6 +289,13 @@ class Trainer:
             # 1. Train and validation for one-epoch
             with reporter.observe("train") as sub_reporter:
                 setattr(dp_model, "epoch", iepoch)
+
+                # build blist index
+                if hasattr(dp_model, 'sampling_type') and "framelevel" in dp_model.sampling_type:
+                    embed_matrix = dp_model.get_bias_embeds()
+                    dp_model.bprocessor.build_index(embed_matrix, dp_model.CbRNN, dp_model.Kproj)
+
+                setattr(dp_model, "learning_phase", "training")
                 all_steps_are_invalid = cls.train_one_epoch(
                     model=dp_model,
                     optimizers=optimizers,
@@ -302,6 +309,7 @@ class Trainer:
                 )
 
             with reporter.observe("valid") as sub_reporter:
+                setattr(dp_model, "learning_phase", "validation")
                 cls.validate_one_epoch(
                     model=dp_model,
                     iterator=valid_iter_factory.build_iter(iepoch),

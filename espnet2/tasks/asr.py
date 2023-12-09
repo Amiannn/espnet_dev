@@ -66,7 +66,13 @@ from espnet2.asr.preencoder.linear import LinearProjection
 from espnet2.asr.preencoder.sinc import LightweightSincConvs
 from espnet2.asr.specaug.abs_specaug import AbsSpecAug
 from espnet2.asr.specaug.specaug import SpecAug
+from espnet2.asr.Contextual_biasing_model import ESPnetContextualBiasingASRModel
+from espnet2.asr.Contextual_biasing_model_cosine import ESPnetContextualBiasingCosineASRModel
+from espnet2.asr.Contextual_biasing_model_sampling import ESPnetContextualBiasingSamplingASRModel
+# from espnet2.asr.Contextual_biasing_model_vocab import ESPnetContextualBiasingVocabASRModel
+from espnet2.asr.Contextual_biasing_model_predictor import ESPnetContextualBiasingPredictorASRModel
 from espnet2.asr.TCPGen_biasing_model import ESPnetTCPGenBiasingASRModel
+from espnet2.asr.TCPGen_biasing_klloss_model import ESPnetTCPGenBiasingKLLossASRModel
 from espnet2.asr_transducer.joint_network import JointNetwork
 from espnet2.layers.abs_normalize import AbsNormalize
 from espnet2.layers.global_mvn import GlobalMVN
@@ -124,7 +130,13 @@ model_choices = ClassChoices(
         espnet=ESPnetASRModel,
         maskctc=MaskCTCModel,
         pit_espnet=PITESPnetModel,
+        contextualbiasing_espnet=ESPnetContextualBiasingASRModel,
+        contextualbiasing_cosine_espnet=ESPnetContextualBiasingCosineASRModel,
+        contextualbiasing_sampling_espnet=ESPnetContextualBiasingSamplingASRModel,
+        # contextualbiasing_vocab_espnet=ESPnetContextualBiasingVocabASRModel,
+        contextualbiasing_predictor_espnet=ESPnetContextualBiasingPredictorASRModel,
         tcpgen_espnet=ESPnetTCPGenBiasingASRModel,
+        tcpgen_klloss_espnet=ESPnetTCPGenBiasingKLLossASRModel,
     ),
     type_check=AbsESPnetModel,
     default="espnet",
@@ -603,6 +615,11 @@ class ASRTask(AbsTask):
             token_list=token_list,
             **args.model_conf,
         )
+        if args.model_conf.get("freeze_enc_dec", False):
+            logging.info('Freezing the encoder and decoder of ASR model.')
+            freeze_model(model.encoder)
+            freeze_model(model.decoder)
+            freeze_model(model.joint_network)
 
         # FIXME(kamo): Should be done in model?
         # 8. Initialize
@@ -611,3 +628,7 @@ class ASRTask(AbsTask):
 
         assert check_return_type(model)
         return model
+
+def freeze_model(model):
+    for param in model.parameters():
+        param.requires_grad = False

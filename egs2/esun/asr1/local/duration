@@ -1,0 +1,3 @@
+train_sp: 92hr
+dev: 3hr
+test: 10hr

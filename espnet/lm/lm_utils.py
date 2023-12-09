@@ -290,3 +290,29 @@ def make_lexical_tree(word_dict, subword_dict, word_unk):
                     succ[cid][1] = wid
                 succ = succ[cid][0]  # move to the child successors
     return root
+
+# TODO(Hori): currently it only works with character-word level LM.
+#             need to consider any types of subwords-to-word mapping.
+def make_lexical_tree_idx(word_dict, subword_dict, word_unk):
+    """Make a lexical tree to compute word-level probabilities"""
+    # node [dict(subword_id -> node), word_id, word_set[start-1, end]]
+    root = [{}, -1, None, []]
+    for w, wid in word_dict.items():
+        # print(f'w: {w}, wid: {wid}')
+        if wid > 0 and wid != word_unk:  # skip <blank> and <unk>
+            if True in [c not in subword_dict for c in w]:  # skip unknown subword
+                continue
+            succ = root[0]  # get successors from root node
+            root[3].append(wid - 1)
+            for i, c in enumerate(w):
+                cid = subword_dict[c]
+                if cid not in succ:  # if next node does not exist, make a new node
+                    succ[cid] = [{}, -1, (wid - 1, wid), [wid - 1]]
+                else:
+                    prev = succ[cid][2]
+                    succ[cid][2] = (min(prev[0], wid - 1), max(prev[1], wid))
+                    succ[cid][3].append(wid - 1)
+                if i == len(w) - 1:  # if word end, set word id
+                    succ[cid][1] = wid
+                succ = succ[cid][0]  # move to the child successors
+    return root

@@ -5,7 +5,7 @@ import sys
 all_rare_words = set()
 dirname = sys.argv[1]
 
-with open("data/Blist/all_rare_words.txt") as fin:
+with open("local/all_rare_words.txt") as fin:
     for line in fin:
         all_rare_words.add(line.strip())
 

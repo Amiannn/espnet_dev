@@ -1,0 +1,48 @@
+import os
+import torch
+
+config = {
+    'log_level': 'INFO', 
+    'output_dir': 'exp/asr_train_conformer_transducer_tcpgen500_deep_sche30_GCN6L_rep_suffix/decode_asr_test_asr_model_valid.loss.ave_10best/test_clean/logdir/output.1', 
+    'ngpu': 1, 
+    'seed': 0, 
+    'dtype': 'float32', 
+    'num_workers': 1, 
+    'data_path_and_name_and_type': [
+        ('dump/raw/test_clean/wav.scp', 'speech', 'kaldi_ark')
+    ], 
+    'key_file': 'exp/asr_train_conformer_transducer_tcpgen500_deep_sche30_GCN6L_rep_suffix/decode_asr_test_asr_model_valid.loss.ave_10best/test_clean/logdir/keys.1.scp', 
+    'allow_variable_data_keys': False, 
+    'asr_train_config': 'exp/asr_train_conformer_transducer_tcpgen500_deep_sche30_GCN6L_rep_suffix/config.yaml', 
+    'asr_model_file': 'exp/asr_train_conformer_transducer_tcpgen500_deep_sche30_GCN6L_rep_suffix/valid.loss.ave_10best.pth', 
+    'lm_train_config': None, 
+    'lm_file': None, 
+    'word_lm_train_config': None, 
+    'word_lm_file': None, 
+    'ngram_file': None, 
+    'model_tag': None, 
+    'enh_s2t_task': False, 
+    'multi_asr': False, 
+    'quantize_asr_model': False, 
+    'quantize_lm': False, 
+    'quantize_modules': ['Linear'], 
+    'quantize_dtype': 'qint8', 
+    'batch_size': 1, 'nbest': 1, 
+    'beam_size': 1, 'penalty': 0.0, 
+    'maxlenratio': 0.0, 
+    'minlenratio': 0.0, 
+    'ctc_weight': 0.0, 
+    'lm_weight': 0.0, 
+    'ngram_weight': 0.9, 
+    'streaming': False, 
+    'hugging_face_decoder': False, 
+    'hugging_face_decoder_conf': {}, 
+    'transducer_conf': None, 
+    'token_type': None, 
+    'bpemodel': None, 
+    'time_sync': False, 
+    'perutt_blist': 'data/test_clean/perutt_blist.json', 
+    'biasinglist': 'local/all_rare_words.txt', 
+    'bmaxlen': 1000, 
+    'bdrop': 0.0
+}

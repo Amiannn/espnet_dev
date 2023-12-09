@@ -23,16 +23,27 @@ from espnet.nets.pytorch_backend.transducer.utils import (
 class Hypothesis:
     """Default hypothesis definition for Transducer search algorithms."""
 
-    score: float
-    yseq: List[int]
+    score    : float
+    yseq     : List[int]
     dec_state: Union[
         Tuple[torch.Tensor, Optional[torch.Tensor]],
         List[Optional[torch.Tensor]],
         torch.Tensor,
     ]
-    lm_state: Union[Dict[str, Any], List[Any]] = None
+    lm_state : Union[Dict[str, Any], List[Any]] = None
     # biasing
-    lextree: list = None
+    lextree         : list = None
+    pgens           : List[int] = None
+    topk_logp       : torch.Tensor = None
+    topk_ids        : torch.Tensor = None
+    top_model_prob  : List[int] = None
+    top_model_pred  : List[int] = None
+    top_tcpgen_prob : List[int] = None
+    top_tcpgen_pred : List[int] = None
+    topk_model_prob : List[int] = None
+    topk_model_pred : List[int] = None
+    topk_tcpgen_prob: List[int] = None
+    topk_tcpgen_pred: List[int] = None
 
 
 @dataclass
@@ -67,6 +78,7 @@ class BeamSearchTransducer:
         nbest: int = 1,
         token_list: Optional[List[str]] = None,
         biasing: bool = False,
+        biasing_type: str = 'tcpgen',
         deepbiasing: bool = False,
         BiasingBundle: dict = None,
     ):
@@ -104,8 +116,9 @@ class BeamSearchTransducer:
         self.sos = self.vocab_size - 1
         self.token_list = token_list
 
-        self.blank_id = decoder.blank_id
-
+        self.blank_id     = decoder.blank_id
+        self.biasing_type = biasing_type
+        logging.info(f'biasing type: {biasing_type}')
         if search_type == "mbg":
             self.beam_size = 1
             self.multi_blank_durations = multi_blank_durations
@@ -113,10 +126,27 @@ class BeamSearchTransducer:
             self.search_algorithm = self.multi_blank_greedy_search
 
         elif self.beam_size <= 1:
-            self.search_algorithm = self.greedy_search
+            if biasing:
+                if self.biasing_type == 'tcpgen':
+                    self.search_algorithm = self.TCPGen_biasing_greedy_search
+                elif self.biasing_type == 'contextualbiasing':
+                    # self.search_algorithm = self.ContextualBiasing_greedy_search
+                    self.search_algorithm = self.ContextualBiasing_trie_greedy_search
+                elif self.biasing_type == 'contextualbiasing_predictor':
+                    self.search_algorithm = self.ContextualBiasingPredictor_greedy_search
+            else:
+                # TODO: Remember to change it back!
+                self.search_algorithm = self.greedy_search
+                # self.search_algorithm = self.greedy_ctc_search
         elif search_type == "default":
             if biasing:
-                self.search_algorithm = self.TCPGen_biasing_beam_search
+                if self.biasing_type == 'tcpgen':
+                    self.search_algorithm = self.TCPGen_biasing_beam_search
+                elif self.biasing_type == 'contextualbiasing':
+                    # self.search_algorithm = self.ContextualBiasing_beam_search
+                    self.search_algorithm = self.ContextualBiasing_trie_beam_search
+                elif self.biasing_type == 'contextualbiasing_predictor':
+                    self.search_algorithm = self.ContextualBiasingPredictor_beam_search
             else:
                 self.search_algorithm = self.default_beam_search
         elif search_type == "tsd":
@@ -164,19 +194,34 @@ class BeamSearchTransducer:
         self.use_lm = lm is not None
         self.lm = lm
         self.lm_weight = lm_weight
-
+        
         # biasing
         self.biasing = biasing
         self.deepbiasing = deepbiasing
         self.gnn = None
         if self.biasing and BiasingBundle is not None:
-            self.Qproj_acoustic = BiasingBundle["Qproj_acoustic"]
-            self.Qproj_char = BiasingBundle["Qproj_char"]
-            self.Kproj = BiasingBundle["Kproj"]
-            self.ooKBemb = BiasingBundle["ooKBemb"]
-            self.pointer_gate = BiasingBundle["pointer_gate"]
-            self.gnn = BiasingBundle["gnn"]
-
+            if self.biasing_type == 'tcpgen':
+                self.Qproj_acoustic = BiasingBundle["Qproj_acoustic"]
+                self.Qproj_char = BiasingBundle["Qproj_char"]
+                self.Kproj = BiasingBundle["Kproj"]
+                self.ooKBemb = BiasingBundle["ooKBemb"]
+                self.pointer_gate = BiasingBundle["pointer_gate"]
+                self.gnn = BiasingBundle["gnn"]
+            elif self.biasing_type == 'contextualbiasing':
+                self.Qproj_acoustic = BiasingBundle["Qproj_acoustic"]
+                self.Kproj = BiasingBundle["Kproj"]
+                self.Vproj = BiasingBundle["Vproj"]
+                self.proj  = BiasingBundle["proj"]
+                self.CbRNN = BiasingBundle["CbRNN"]
+                self.ooKBemb = BiasingBundle["ooKBemb"]
+            elif self.biasing_type == 'contextualbiasing_predictor':
+                self.Qproj_semantic = BiasingBundle["Qproj_semantic"]
+                self.Kproj = BiasingBundle["Kproj"]
+                self.Vproj = BiasingBundle["Vproj"]
+                self.proj  = BiasingBundle["proj"]
+                self.CbRNN = BiasingBundle["CbRNN"]
+                self.ooKBemb = BiasingBundle["ooKBemb"]
+                
         if self.use_lm and self.beam_size == 1:
             logging.warning("LM is provided but not used, since this is greedy search.")
 
@@ -189,6 +234,8 @@ class BeamSearchTransducer:
         self,
         enc_out: torch.Tensor,
         lextree: list = None,
+        cb_tokens: torch.Tensor = None, 
+        cb_tokens_len: torch.Tensor = None
     ) -> Union[List[Hypothesis], List[ExtendedHypothesis]]:
         """Perform beam search.
 
@@ -200,9 +247,17 @@ class BeamSearchTransducer:
 
         """
         self.decoder.set_device(enc_out.device)
+        
+        if self.use_lm:
+            self.lm.to(enc_out.device)
 
         if self.biasing:
-            nbest_hyps = self.search_algorithm(enc_out, lextree=lextree)
+            if self.biasing_type == 'tcpgen':
+                nbest_hyps = self.search_algorithm(enc_out, lextree=lextree)
+            elif self.biasing_type == 'contextualbiasing':
+                nbest_hyps = self.search_algorithm(enc_out, cb_tokens=cb_tokens, cb_tokens_len=cb_tokens_len, lextree=lextree)
+            elif self.biasing_type == 'contextualbiasing_predictor':
+                nbest_hyps = self.search_algorithm(enc_out, cb_tokens=cb_tokens, cb_tokens_len=cb_tokens_len)
         else:
             nbest_hyps = self.search_algorithm(enc_out)
 
@@ -273,12 +328,58 @@ class BeamSearchTransducer:
             hyp: 1-best hypotheses.
 
         """
+        logging.info('Greedy decoding!')
         dec_state = self.decoder.init_state(1)
 
         hyp = Hypothesis(score=0.0, yseq=[self.blank_id], dec_state=dec_state)
         cache = {}
 
         dec_out, state, _ = self.decoder.score(hyp, cache)
+        topk_logps = []
+        topk_ids   = []
+        for enc_out_t in enc_out:
+            logp = torch.log_softmax(
+                self.joint_network(enc_out_t, dec_out),
+                dim=-1,
+            )
+            top_logp, pred = torch.max(logp, dim=-1)
+
+            if pred != self.blank_id:
+                _topk_logp, _topk_ids = torch.topk(logp, 50)
+                hyp.yseq.append(int(pred))
+                hyp.score += float(top_logp)
+
+                hyp.dec_state = state
+                topk_logps.append(_topk_logp)
+                topk_ids.append(_topk_ids)
+                dec_out, state, _ = self.decoder.score(hyp, cache)
+
+        # hyp.topk_logp = torch.stack(topk_logps)
+        # hyp.topk_ids  = torch.stack(topk_ids)
+
+        # logging.info(f'yseq length: {len(hyp.yseq)}')
+        # logging.info(f'topk_logp shape: {hyp.topk_logp.shape}')
+        # logging.info(f'topk_ids  shape: {hyp.topk_ids.shape}')
+        return [hyp]
+
+    def greedy_ctc_search(self, enc_out: torch.Tensor) -> List[Hypothesis]:
+        """Greedy search implementation.
+
+        Args:
+            enc_out: Encoder output sequence. (T, D_enc)
+
+        Returns:
+            hyp: 1-best hypotheses.
+
+        """
+        logging.info('Greedy CTC decoding!')
+        dec_state = self.decoder.init_state(1)
+
+        hyp = Hypothesis(score=0.0, yseq=[self.blank_id], dec_state=dec_state)
+        cache = {}
+
+        dec_out, state, _ = self.decoder.score(hyp, cache)
+        dec_out = torch.zeros_like(dec_out)
 
         for enc_out_t in enc_out:
             logp = torch.log_softmax(
@@ -288,13 +389,276 @@ class BeamSearchTransducer:
             top_logp, pred = torch.max(logp, dim=-1)
 
             if pred != self.blank_id:
+                _topk_logp, _topk_ids = torch.topk(logp, 50)
+                hyp.yseq.append(int(pred))
+                hyp.score += float(top_logp)
+        return [hyp]
+
+    def TCPGen_biasing_greedy_search(
+        self, enc_out: torch.Tensor, lextree: list = None
+    ) -> List[Hypothesis]:
+        """Greedy search implementation.
+
+        Args:
+            enc_out: Encoder output sequence. (T, D_enc)
+
+        Returns:
+            hyp: 1-best hypotheses.
+
+        """
+        logging.info('Using TCPGen greedy search!')
+        dec_state = self.decoder.init_state(1)
+
+        hyp = Hypothesis(
+            score=0.0, 
+            yseq=[self.blank_id], 
+            dec_state=dec_state, 
+            lextree=lextree, 
+            pgens=[0],
+            top_model_prob=[0],
+            top_model_pred=[0],
+            top_tcpgen_prob=[0],
+            top_tcpgen_pred=[0],
+            topk_tcpgen_prob=[0], 
+            topk_tcpgen_pred=[0],
+            topk_model_prob=[0],
+            topk_model_pred=[0]
+        )
+        cache = {}
+
+        # Encode prefix tree using GNN
+        node_encs = None
+        if self.gnn is not None:
+            logging.info('using GCN!')
+            node_encs = self.gnn(lextree, self.decoder.embed)
+
+        dec_out, state, _ = self.decoder.score(hyp, cache)
+        p_gens = []
+        for enc_out_t in enc_out:
+            # biasing
+            trees = [None]
+            if self.biasing and lextree is not None:
+                vy = hyp.yseq[-1] if len(hyp.yseq) > 1 else self.blank_id
+                # print(f'vy: {vy}, token: {self.token_list[vy]}, tree len: {len(hyp.lextree)}, tree: {hyp.lextree}')
+                print(f'vy: {vy}, token: {self.token_list[vy]}')
+                retval = self.get_step_biasing_embs(
+                    [vy], [hyp.lextree], [lextree], node_encs
+                )
+                step_mask = retval[0]
+                step_embs = retval[1]
+                trees = retval[2]
+                p_gen_mask = retval[3]
+                back_transform = retval[4]
+                index_list = retval[5]
+                print(f'index list: {index_list}')
+                ookb_list = self.token_list + ['<ool>']
+                print(f'index list: {[ookb_list[k] for k in index_list[0]]}')
+                query_char = self.decoder.embed(
+                    # torch.LongTensor([vy]).to(node_encs.device)
+                    torch.LongTensor([vy]).to(dec_out.device)
+                ).squeeze(0)
+                query_char = self.Qproj_char(query_char)
+                query_acoustic = self.Qproj_acoustic(enc_out_t)
+                query = (query_char + query_acoustic).unsqueeze(0).unsqueeze(0)
+                hptr, tcpgen_dist = self.get_meetingKB_emb_map(
+                    query,
+                    step_mask,
+                    back_transform,
+                    index_list,
+                    meeting_KB=step_embs,
+                )
+                tcpgen_dist = tcpgen_dist[0, 0]
+                hptr = hptr[0, 0]
+            print('_' * 30)
+            if self.biasing and self.deepbiasing:
+                joint_out, joint_act = self.joint_network(enc_out_t, dec_out, hptr)
+            else:
+                joint_out = self.joint_network(enc_out_t, dec_out)
+        
+            # biasing
+            if self.biasing and lextree is not None:
+                p_gen = torch.sigmoid(
+                    self.pointer_gate(torch.cat([joint_act, hptr], dim=-1))
+                )
+                model_dist = torch.softmax(joint_out, dim=-1)
+                top_model_prob, top_model_pred   = torch.max(model_dist, dim=-1)
+                top_tcpgen_prob, top_tcpgen_pred = torch.max(tcpgen_dist, dim=-1)
+                topk_model_prob, topk_model_pred = torch.topk(model_dist, 100, dim=-1)
+                topk_tcpgen_prob, topk_tcpgen_pred = torch.topk(tcpgen_dist, 100, dim=-1)
+
+                p_gen = p_gen.item() if p_gen_mask[0] == 0 else 0
+                # p_gen = (1 - top_model_prob.item()) if p_gen_mask[0] == 0 else 0
+                # p_gen = (1 - top_tcpgen_prob.item()) if p_gen_mask[0] == 0 else 0
+                # Get factorised loss
+                p_not_null = 1.0 - model_dist[0:1]
+                ptr_dist_fact = tcpgen_dist[1:] * p_not_null
+                ptr_gen_complement = tcpgen_dist[-1:] * p_gen
+                p_partial = ptr_dist_fact[:-1] * p_gen + model_dist[1:] * (
+                    1 - p_gen + ptr_gen_complement
+                )
+                p_final = torch.cat([model_dist[0:1], p_partial], dim=-1)
+                logp = torch.log(p_final)
+            else:
+                logp = torch.log_softmax(
+                    joint_out,
+                    dim=-1,
+                )
+            top_logp, pred = torch.max(logp, dim=-1)
+            if pred != self.blank_id:
+                hyp.yseq.append(int(pred))
+                hyp.score += float(top_logp)
+                hyp.dec_state = state
+                hyp.lextree=trees[0] if self.biasing else None
+
+                dec_out, state, _ = self.decoder.score(hyp, cache)
+                if self.biasing:
+                    hyp.pgens.append(p_gen)
+                    hyp.top_model_prob.append(float(top_model_prob))
+                    hyp.top_model_pred.append(int(top_model_pred))
+                    hyp.top_tcpgen_prob.append(float(top_tcpgen_prob))
+                    hyp.top_tcpgen_pred.append(int(top_tcpgen_pred))
+                    hyp.topk_tcpgen_prob.append(topk_tcpgen_prob.tolist())
+                    hyp.topk_tcpgen_pred.append(topk_tcpgen_pred.tolist())
+                    hyp.topk_model_prob.append(topk_model_prob.tolist())
+                    hyp.topk_model_pred.append(topk_model_pred.tolist())
+        
+        return [hyp]
+
+    def ContextualBiasing_greedy_search(
+            self, 
+            enc_out      : torch.Tensor, 
+            cb_tokens    : torch.Tensor,
+            cb_tokens_len: torch.Tensor,
+        ) -> List[Hypothesis]:
+        """Greedy search implementation.
+
+        Args:
+            enc_out: Encoder output sequence. (T, D_enc)
+
+        Returns:
+            hyp: 1-best hypotheses.
+
+        """
+        logging.info('Using Contextual Biasing greedy search!')
+        dec_state = self.decoder.init_state(1)
+
+        hyp = Hypothesis(score=0.0, yseq=[self.blank_id], dec_state=dec_state)
+        cache = {}
+
+        cb_tokens     = cb_tokens.to(enc_out.device)
+        cb_tokens_len = cb_tokens_len.to(enc_out.device)
+        embed_matrix  = torch.cat(
+            [self.decoder.embed.weight.data, self.ooKBemb.weight], dim=0
+        )
+        cb_tokens_embed = embed_matrix[cb_tokens]
+        cb_seq_embed, _ = self.CbRNN(cb_tokens_embed)
+        cb_embeds       = torch.mean(cb_seq_embed, dim=1)
+
+        dec_out, state, _ = self.decoder.score(hyp, cache)
+        topk_logps = []
+        topk_ids   = []
+        for enc_out_t in enc_out:
+            lin_encoder_out = self.joint_network.lin_enc(enc_out_t)
+            aco_bias = self.get_acoustic_biasing_vector(enc_out_t, cb_embeds)
+
+            lin_decoder_out = self.joint_network.lin_dec(dec_out)
+            lin_encoder_out = lin_encoder_out + aco_bias
+
+            joint_out = self.joint_network.joint_activation(
+                lin_encoder_out + lin_decoder_out
+            )
+            joint_out = self.joint_network.lin_out(joint_out)
+            logp      = torch.log_softmax(
+                joint_out,
+                dim=-1,
+            )
+            # logp = torch.log_softmax(
+            #     self.joint_network(enc_out_t, dec_out),
+            #     dim=-1,
+            # )
+            top_logp, pred = torch.max(logp, dim=-1)
+
+            if pred != self.blank_id:
+                _topk_logp, _topk_ids = torch.topk(logp, 50)
                 hyp.yseq.append(int(pred))
                 hyp.score += float(top_logp)
 
                 hyp.dec_state = state
-
+                topk_logps.append(_topk_logp)
+                topk_ids.append(_topk_ids)
                 dec_out, state, _ = self.decoder.score(hyp, cache)
 
+        return [hyp]
+
+    def ContextualBiasing_trie_greedy_search(
+        self, 
+        enc_out      : torch.Tensor, 
+        cb_tokens    : torch.Tensor,
+        cb_tokens_len: torch.Tensor, 
+        lextree      : list = None
+    ) -> List[Hypothesis]:
+        """Greedy search implementation.
+
+        Args:
+            enc_out: Encoder output sequence. (T, D_enc)
+
+        Returns:
+            hyp: 1-best hypotheses.
+
+        """
+        logging.info('Using Contextual Biasing Trie greedy search!')
+        dec_state = self.decoder.init_state(1)
+
+        hyp = Hypothesis(score=0.0, yseq=[self.blank_id], dec_state=dec_state, lextree=lextree)
+        cache = {}
+
+        cb_tokens     = cb_tokens.to(enc_out.device)
+        cb_tokens_len = cb_tokens_len.to(enc_out.device)
+        embed_matrix  = torch.cat(
+            [self.decoder.embed.weight.data, self.ooKBemb.weight], dim=0
+        )
+        cb_tokens_embed = embed_matrix[cb_tokens]
+        cb_seq_embed, _ = self.CbRNN(cb_tokens_embed)
+        cb_embeds       = torch.mean(cb_seq_embed, dim=1)
+        # print(f'cb_embeds: {cb_embeds.shape}')
+        dec_out, state, _ = self.decoder.score(hyp, cache)
+
+        trees = [None]
+        for enc_out_t in enc_out:
+            lin_encoder_out = self.joint_network.lin_enc(enc_out_t)
+            lin_decoder_out = self.joint_network.lin_dec(dec_out)
+            
+            if lextree is not None:
+                vy = hyp.yseq[-1] if len(hyp.yseq) > 1 else self.blank_id
+                trees, p_gen_mask, index_list = self.get_step_biasing_embs_cb(
+                    [vy], [hyp.lextree], [lextree]
+                )
+                gate = True if p_gen_mask[0] == 0 else False
+                cb_embeds_sub = cb_embeds[index_list[0] + [cb_embeds.shape[0] - 1]]
+                if gate:
+                    aco_bias = self.get_acoustic_biasing_vector(enc_out_t, cb_embeds_sub)
+                    lin_encoder_out = lin_encoder_out + aco_bias
+            else:
+                aco_bias = self.get_acoustic_biasing_vector(enc_out_t, cb_embeds)
+                lin_encoder_out = lin_encoder_out + aco_bias
+            
+            joint_out = self.joint_network.joint_activation(
+                lin_encoder_out + lin_decoder_out
+            )
+            joint_out = self.joint_network.lin_out(joint_out)
+            logp      = torch.log_softmax(
+                joint_out,
+                dim=-1,
+            )
+            top_logp, pred = torch.max(logp, dim=-1)
+
+            if pred != self.blank_id:
+                hyp.yseq.append(int(pred))
+                hyp.score += float(top_logp)
+                hyp.dec_state = state
+                if lextree != None:
+                    hyp.lextree=trees[0]
+                dec_out, state, _ = self.decoder.score(hyp, cache)
         return [hyp]
 
     def default_beam_search(self, enc_out: torch.Tensor) -> List[Hypothesis]:
@@ -314,7 +678,13 @@ class BeamSearchTransducer:
 
         dec_state = self.decoder.init_state(1)
 
-        kept_hyps = [Hypothesis(score=0.0, yseq=[self.blank_id], dec_state=dec_state)]
+        kept_hyps = [
+            Hypothesis(
+                score=0.0, 
+                yseq=[self.blank_id], 
+                dec_state=dec_state
+            )
+        ]
         cache = {}
         cache_lm = {}
 
@@ -358,14 +728,15 @@ class BeamSearchTransducer:
                         lm_state=max_hyp.lm_state,
                     )
                 )
-
                 if self.use_lm:
                     if tuple(max_hyp.yseq) not in cache_lm:
+                        _tmp = torch.LongTensor(
+                            [self.sos] + max_hyp.yseq[1:],
+                            # device=self.decoder.device,
+                        )
+                        _tmp = _tmp.to(self.decoder.device)
                         lm_scores, lm_state = self.lm.score(
-                            torch.LongTensor(
-                                [self.sos] + max_hyp.yseq[1:],
-                                device=self.decoder.device,
-                            ),
+                            _tmp,
                             max_hyp.lm_state,
                             None,
                         )
@@ -428,7 +799,19 @@ class BeamSearchTransducer:
 
         kept_hyps = [
             Hypothesis(
-                score=0.0, yseq=[self.blank_id], dec_state=dec_state, lextree=lextree
+                score=0.0, 
+                yseq=[self.blank_id], 
+                dec_state=dec_state, 
+                lextree=lextree,
+                pgens=[0],
+                top_model_prob=[0],
+                top_model_pred=[0],
+                top_tcpgen_prob=[0],
+                top_tcpgen_pred=[0],
+                topk_tcpgen_prob=[0],
+                topk_tcpgen_pred=[0],
+                topk_model_prob=[0],
+                topk_model_pred=[0]
             )
         ]
         cache = {}
@@ -477,7 +860,7 @@ class BeamSearchTransducer:
                     index_list = retval[5]
 
                     query_char = self.decoder.embed(
-                        torch.LongTensor([vy]).to(node_encs.device)
+                        torch.LongTensor([vy]).to(dec_out.device)
                     ).squeeze(0)
                     query_char = self.Qproj_char(query_char)
                     query_acoustic = self.Qproj_acoustic(enc_out_t)
@@ -494,6 +877,8 @@ class BeamSearchTransducer:
 
                 if self.biasing and self.deepbiasing:
                     joint_out, joint_act = self.joint_network(enc_out_t, dec_out, hptr)
+                elif self.biasing:
+                    joint_out, joint_act = self.joint_network(enc_out_t, dec_out)
                 else:
                     joint_out = self.joint_network(enc_out_t, dec_out)
 
@@ -503,7 +888,9 @@ class BeamSearchTransducer:
                         self.pointer_gate(torch.cat([joint_act, hptr], dim=-1))
                     )
                     model_dist = torch.softmax(joint_out, dim=-1)
+                    top_model_prob, top_model_pred = torch.max(model_dist, dim=-1)
                     p_gen = p_gen if p_gen_mask[0] == 0 else 0
+                    # p_gen = (1 - top_model_prob) if p_gen_mask[0] == 0 else 0
                     # Get factorised loss
                     p_not_null = 1.0 - model_dist[0:1]
                     ptr_dist_fact = tcpgen_dist[1:] * p_not_null
@@ -526,7 +913,7 @@ class BeamSearchTransducer:
                         yseq=max_hyp.yseq[:],
                         dec_state=max_hyp.dec_state,
                         lm_state=max_hyp.lm_state,
-                        lextree=max_hyp.lextree,
+                        lextree=max_hyp.lextree
                     )
                 )
 
@@ -573,6 +960,473 @@ class BeamSearchTransducer:
 
         return self.sort_nbest(kept_hyps)
 
+    def ContextualBiasing_beam_search(
+            self, 
+            enc_out      : torch.Tensor, 
+            cb_tokens    : torch.Tensor,
+            cb_tokens_len: torch.Tensor,
+        ) -> List[Hypothesis]:
+        """Beam search implementation.
+
+        Modified from https://arxiv.org/pdf/1211.3711.pdf
+
+        Args:
+            enc_out: Encoder output sequence. (T, D)
+
+        Returns:
+            nbest_hyps: N-best hypothesis.
+
+        """
+        logging.info('contextual biasing beam search!')
+        beam = min(self.beam_size, self.vocab_size)
+        beam_k = min(beam, (self.vocab_size - 1))
+
+        dec_state = self.decoder.init_state(1)
+
+        kept_hyps = [
+            Hypothesis(
+                score=0.0, 
+                yseq=[self.blank_id], 
+                dec_state=dec_state
+            )
+        ]
+        cache = {}
+        cache_lm = {}
+
+        # Acoustic biasing
+        # cb_tokens     = cb_tokens.to(enc_out.device)
+        # embed_matrix  = torch.cat(
+        #     [self.decoder.embed.weight.data, self.ooKBemb.weight], dim=0
+        # )
+        # cb_token_embed   = embed_matrix[cb_tokens]
+        # cb_tokens_packed = torch.nn.utils.rnn.pack_padded_sequence(
+        #     cb_token_embed, 
+        #     cb_tokens_len,
+        #     batch_first=True,
+        #     enforce_sorted=False
+        # )
+        # cb_seq_embed_packed, _ = self.CbRNN(cb_tokens_packed)
+        # cb_seq_embed_packed, input_sizes = torch.nn.utils.rnn.pad_packed_sequence(
+        #     cb_seq_embed_packed, 
+        #     batch_first=True
+        # )
+        # input_sizes = input_sizes.to(enc_out.device)
+        # cb_embeds   = torch.sum(cb_seq_embed_packed, dim=1) / input_sizes.unsqueeze(-1)
+        cb_tokens     = cb_tokens.to(enc_out.device)
+        cb_tokens_len = cb_tokens_len.to(enc_out.device)
+        embed_matrix  = torch.cat(
+            [self.decoder.embed.weight.data, self.ooKBemb.weight], dim=0
+        )
+        cb_tokens_embed = embed_matrix[cb_tokens]
+        cb_seq_embed, _ = self.CbRNN(cb_tokens_embed)
+        cb_embeds       = torch.mean(cb_seq_embed, dim=1)
+        
+        for enc_out_t in enc_out:
+            hyps = kept_hyps
+            kept_hyps = []
+
+            if self.token_list is not None:
+                logging.debug(
+                    "\n"
+                    + "\n".join(
+                        [
+                            "hypo: "
+                            + "".join([self.token_list[x] for x in hyp.yseq[1:]])
+                            + f", score: {round(float(hyp.score), 2)}"
+                            for hyp in sorted(hyps, key=lambda x: x.score, reverse=True)
+                        ]
+                    )
+                )
+
+            while True:
+                if self.score_norm_during:
+                    max_hyp = max(hyps, key=lambda x: x.score / len(x.yseq))
+                else:
+                    max_hyp = max(hyps, key=lambda x: x.score)
+                hyps.remove(max_hyp)
+
+                dec_out, state, lm_tokens = self.decoder.score(max_hyp, cache)
+
+                lin_encoder_out = self.joint_network.lin_enc(enc_out_t)
+                aco_bias = self.get_acoustic_biasing_vector(enc_out_t, cb_embeds)
+
+                lin_decoder_out = self.joint_network.lin_dec(dec_out)
+                lin_encoder_out = lin_encoder_out + aco_bias
+
+                joint_out = self.joint_network.joint_activation(
+                    lin_encoder_out + lin_decoder_out
+                )
+                joint_out = self.joint_network.lin_out(joint_out)
+
+                # joint_out, _ = self.joint_network(enc_out_t, dec_out)
+                logp = torch.log_softmax(
+                    joint_out,
+                    dim=-1,
+                )
+                top_k = logp[1:].topk(beam_k, dim=-1)
+
+                kept_hyps.append(
+                    Hypothesis(
+                        score=(max_hyp.score + float(logp[0:1])),
+                        yseq=max_hyp.yseq[:],
+                        dec_state=max_hyp.dec_state,
+                        lm_state=max_hyp.lm_state,
+                    )
+                )
+                if self.use_lm:
+                    if tuple(max_hyp.yseq) not in cache_lm:
+                        _tmp = torch.LongTensor(
+                            [self.sos] + max_hyp.yseq[1:],
+                            # device=self.decoder.device,
+                        )
+                        _tmp = _tmp.to(self.decoder.device)
+                        lm_scores, lm_state = self.lm.score(
+                            _tmp,
+                            max_hyp.lm_state,
+                            None,
+                        )
+                        cache_lm[tuple(max_hyp.yseq)] = (lm_scores, lm_state)
+                    else:
+                        lm_scores, lm_state = cache_lm[tuple(max_hyp.yseq)]
+                else:
+                    lm_state = max_hyp.lm_state
+
+                for logp, k in zip(*top_k):
+                    score = max_hyp.score + float(logp)
+
+                    if self.use_lm:
+                        score += self.lm_weight * lm_scores[k + 1]
+
+                    hyps.append(
+                        Hypothesis(
+                            score=score,
+                            yseq=max_hyp.yseq[:] + [int(k + 1)],
+                            dec_state=state,
+                            lm_state=lm_state,
+                        )
+                    )
+
+                if self.score_norm_during:
+                    hyps_max = float(
+                        max(hyps, key=lambda x: x.score / len(x.yseq)).score
+                    )
+                else:
+                    hyps_max = float(max(hyps, key=lambda x: x.score).score)
+                kept_most_prob = sorted(
+                    [hyp for hyp in kept_hyps if hyp.score > hyps_max],
+                    key=lambda x: x.score,
+                )
+                if len(kept_most_prob) >= beam:
+                    kept_hyps = kept_most_prob
+                    break
+
+        return self.sort_nbest(kept_hyps)
+
+    def ContextualBiasing_trie_beam_search(
+            self, 
+            enc_out      : torch.Tensor, 
+            cb_tokens    : torch.Tensor,
+            cb_tokens_len: torch.Tensor,
+            lextree      : list = None
+        ) -> List[Hypothesis]:
+        """Beam search implementation.
+
+        Modified from https://arxiv.org/pdf/1211.3711.pdf
+
+        Args:
+            enc_out: Encoder output sequence. (T, D)
+
+        Returns:
+            nbest_hyps: N-best hypothesis.
+
+        """
+        logging.info('contextual biasing trie beam search!')
+        beam = min(self.beam_size, self.vocab_size)
+        beam_k = min(beam, (self.vocab_size - 1))
+
+        dec_state = self.decoder.init_state(1)
+
+        kept_hyps = [
+            Hypothesis(
+                score=0.0, 
+                yseq=[self.blank_id], 
+                dec_state=dec_state,
+                lextree=lextree
+            )
+        ]
+        cache = {}
+        cache_lm = {}
+
+        # Acoustic biasing
+        cb_tokens     = cb_tokens.to(enc_out.device)
+        cb_tokens_len = cb_tokens_len.to(enc_out.device)
+        embed_matrix  = torch.cat(
+            [self.decoder.embed.weight.data, self.ooKBemb.weight], dim=0
+        )
+        cb_tokens_embed = embed_matrix[cb_tokens]
+        cb_seq_embed, _ = self.CbRNN(cb_tokens_embed)
+        cb_embeds       = torch.mean(cb_seq_embed, dim=1)
+        
+        for enc_out_t in enc_out:
+            hyps = kept_hyps
+            kept_hyps = []
+
+            if self.token_list is not None:
+                logging.debug(
+                    "\n"
+                    + "\n".join(
+                        [
+                            "hypo: "
+                            + "".join([self.token_list[x] for x in hyp.yseq[1:]])
+                            + f", score: {round(float(hyp.score), 2)}"
+                            for hyp in sorted(hyps, key=lambda x: x.score, reverse=True)
+                        ]
+                    )
+                )
+
+            while True:
+                if self.score_norm_during:
+                    max_hyp = max(hyps, key=lambda x: x.score / len(x.yseq))
+                else:
+                    max_hyp = max(hyps, key=lambda x: x.score)
+                hyps.remove(max_hyp)
+
+                dec_out, state, lm_tokens = self.decoder.score(max_hyp, cache)
+
+                lin_encoder_out = self.joint_network.lin_enc(enc_out_t)
+                lin_decoder_out = self.joint_network.lin_dec(dec_out)
+
+                if lextree is not None:
+                    vy = max_hyp.yseq[-1] if len(max_hyp.yseq) > 1 else self.blank_id
+                    trees, p_gen_mask, index_list = self.get_step_biasing_embs_cb(
+                        [vy], [max_hyp.lextree], [lextree]
+                    )
+                    gate = True if p_gen_mask[0] == 0 else False
+                    cb_embeds_sub = cb_embeds[index_list[0] + [cb_embeds.shape[0] - 1]]
+                    if gate:
+                        aco_bias = self.get_acoustic_biasing_vector(enc_out_t, cb_embeds_sub)
+                        lin_encoder_out = lin_encoder_out + aco_bias
+                else:
+                    aco_bias = self.get_acoustic_biasing_vector(enc_out_t, cb_embeds)
+                    lin_encoder_out = lin_encoder_out + aco_bias
+
+                joint_out = self.joint_network.joint_activation(
+                    lin_encoder_out + lin_decoder_out
+                )
+                joint_out = self.joint_network.lin_out(joint_out)
+
+                # joint_out, _ = self.joint_network(enc_out_t, dec_out)
+                logp = torch.log_softmax(
+                    joint_out,
+                    dim=-1,
+                )
+                top_k = logp[1:].topk(beam_k, dim=-1)
+
+                kept_hyps.append(
+                    Hypothesis(
+                        score=(max_hyp.score + float(logp[0:1])),
+                        yseq=max_hyp.yseq[:],
+                        dec_state=max_hyp.dec_state,
+                        lm_state=max_hyp.lm_state,
+                        lextree=max_hyp.lextree,
+                    )
+                )
+                if self.use_lm:
+                    if tuple(max_hyp.yseq) not in cache_lm:
+                        _tmp = torch.LongTensor(
+                            [self.sos] + max_hyp.yseq[1:],
+                            # device=self.decoder.device,
+                        )
+                        _tmp = _tmp.to(self.decoder.device)
+                        lm_scores, lm_state = self.lm.score(
+                            _tmp,
+                            max_hyp.lm_state,
+                            None,
+                        )
+                        cache_lm[tuple(max_hyp.yseq)] = (lm_scores, lm_state)
+                    else:
+                        lm_scores, lm_state = cache_lm[tuple(max_hyp.yseq)]
+                else:
+                    lm_state = max_hyp.lm_state
+
+                for logp, k in zip(*top_k):
+                    score = max_hyp.score + float(logp)
+
+                    if self.use_lm:
+                        score += self.lm_weight * lm_scores[k + 1]
+
+                    hyps.append(
+                        Hypothesis(
+                            score=score,
+                            yseq=max_hyp.yseq[:] + [int(k + 1)],
+                            dec_state=state,
+                            lm_state=lm_state,
+                            lextree=trees[0] if lextree else None
+                        )
+                    )
+
+                if self.score_norm_during:
+                    hyps_max = float(
+                        max(hyps, key=lambda x: x.score / len(x.yseq)).score
+                    )
+                else:
+                    hyps_max = float(max(hyps, key=lambda x: x.score).score)
+                kept_most_prob = sorted(
+                    [hyp for hyp in kept_hyps if hyp.score > hyps_max],
+                    key=lambda x: x.score,
+                )
+                if len(kept_most_prob) >= beam:
+                    kept_hyps = kept_most_prob
+                    break
+
+        return self.sort_nbest(kept_hyps)
+
+    def ContextualBiasingPredictor_beam_search(
+            self, 
+            enc_out      : torch.Tensor, 
+            cb_tokens    : torch.Tensor,
+            cb_tokens_len: torch.Tensor,
+        ) -> List[Hypothesis]:
+        """Beam search implementation.
+
+        Modified from https://arxiv.org/pdf/1211.3711.pdf
+
+        Args:
+            enc_out: Encoder output sequence. (T, D)
+
+        Returns:
+            nbest_hyps: N-best hypothesis.
+
+        """
+        logging.info('contextual biasing beam search!')
+        beam = min(self.beam_size, self.vocab_size)
+        beam_k = min(beam, (self.vocab_size - 1))
+
+        dec_state = self.decoder.init_state(1)
+
+        kept_hyps = [
+            Hypothesis(
+                score=0.0, 
+                yseq=[self.blank_id], 
+                dec_state=dec_state
+            )
+        ]
+        cache = {}
+        cache_lm = {}
+
+        # Acoustic biasing
+        cb_tokens     = cb_tokens.to(enc_out.device)
+        # cb_tokens_len = (cb_tokens_len - 1).to(enc_out.device)
+        cb_tokens_len = cb_tokens_len.to(enc_out.device)
+        embed_matrix  = torch.cat(
+            [self.decoder.embed.weight.data, self.ooKBemb.weight], dim=0
+        )
+        cb_tokens_embed = embed_matrix[cb_tokens]
+        cb_seq_embed, _ = self.CbRNN(cb_tokens_embed)
+        cb_embed = torch.mean(cb_seq_embed, dim=1)
+        
+        for enc_out_t in enc_out:
+            hyps = kept_hyps
+            kept_hyps = []
+
+            if self.token_list is not None:
+                logging.debug(
+                    "\n"
+                    + "\n".join(
+                        [
+                            "hypo: "
+                            + "".join([self.token_list[x] for x in hyp.yseq[1:]])
+                            + f", score: {round(float(hyp.score), 2)}"
+                            for hyp in sorted(hyps, key=lambda x: x.score, reverse=True)
+                        ]
+                    )
+                )
+
+            while True:
+                if self.score_norm_during:
+                    max_hyp = max(hyps, key=lambda x: x.score / len(x.yseq))
+                else:
+                    max_hyp = max(hyps, key=lambda x: x.score)
+                hyps.remove(max_hyp)
+
+                dec_out, state, lm_tokens = self.decoder.score(max_hyp, cache)
+                sem_bias, atten = self.get_semantic_biasing_vector(
+                    dec_out, cb_embed, return_atten=True
+                )
+                
+                lin_encoder_out = self.joint_network.lin_enc(enc_out_t)
+                lin_decoder_out = self.joint_network.lin_dec(dec_out)
+                lin_decoder_out = lin_decoder_out + sem_bias
+
+                joint_out = self.joint_network.joint_activation(
+                    lin_encoder_out + lin_decoder_out
+                )
+                joint_out = self.joint_network.lin_out(joint_out)
+
+                # joint_out, _ = self.joint_network(enc_out_t, dec_out)
+                logp = torch.log_softmax(
+                    joint_out,
+                    dim=-1,
+                )
+                top_k = logp[1:].topk(beam_k, dim=-1)
+
+                kept_hyps.append(
+                    Hypothesis(
+                        score=(max_hyp.score + float(logp[0:1])),
+                        yseq=max_hyp.yseq[:],
+                        dec_state=max_hyp.dec_state,
+                        lm_state=max_hyp.lm_state,
+                    )
+                )
+                if self.use_lm:
+                    if tuple(max_hyp.yseq) not in cache_lm:
+                        _tmp = torch.LongTensor(
+                            [self.sos] + max_hyp.yseq[1:],
+                            # device=self.decoder.device,
+                        )
+                        _tmp = _tmp.to(self.decoder.device)
+                        lm_scores, lm_state = self.lm.score(
+                            _tmp,
+                            max_hyp.lm_state,
+                            None,
+                        )
+                        cache_lm[tuple(max_hyp.yseq)] = (lm_scores, lm_state)
+                    else:
+                        lm_scores, lm_state = cache_lm[tuple(max_hyp.yseq)]
+                else:
+                    lm_state = max_hyp.lm_state
+
+                for logp, k in zip(*top_k):
+                    score = max_hyp.score + float(logp)
+
+                    if self.use_lm:
+                        score += self.lm_weight * lm_scores[k + 1]
+
+                    hyps.append(
+                        Hypothesis(
+                            score=score,
+                            yseq=max_hyp.yseq[:] + [int(k + 1)],
+                            dec_state=state,
+                            lm_state=lm_state,
+                        )
+                    )
+
+                if self.score_norm_during:
+                    hyps_max = float(
+                        max(hyps, key=lambda x: x.score / len(x.yseq)).score
+                    )
+                else:
+                    hyps_max = float(max(hyps, key=lambda x: x.score).score)
+                kept_most_prob = sorted(
+                    [hyp for hyp in kept_hyps if hyp.score > hyps_max],
+                    key=lambda x: x.score,
+                )
+                if len(kept_most_prob) >= beam:
+                    kept_hyps = kept_most_prob
+                    break
+
+        return self.sort_nbest(kept_hyps)
+
     def get_step_biasing_embs(self, char_ids, trees, origTries, node_encs=None):
         ooKB_id = self.vocab_size
         p_gen_mask = []
@@ -596,6 +1450,8 @@ class BeamSearchTransducer:
             elif vy not in new_tree:
                 new_tree = [{}]
                 p_gen_mask.append(1)
+                # new_tree = origTries[i]
+                # p_gen_mask.append(0)
             else:
                 new_tree = new_tree[vy]
                 p_gen_mask.append(0)
@@ -630,6 +1486,33 @@ class BeamSearchTransducer:
 
         return step_mask, step_embs, new_trees, p_gen_mask, back_transform, index_list
 
+    def get_step_biasing_embs_cb(self, char_ids, trees, origTries):
+        ooKB_id = self.vocab_size
+        p_gen_mask = []
+        index_list = []
+        new_trees  = []
+        for i, vy in enumerate(char_ids):
+            new_tree = trees[i][0]
+            if vy == self.blank_id:
+                new_tree = origTries[i]
+                p_gen_mask.append(0)
+            elif self.token_list[vy].endswith("▁"):
+                if vy in new_tree and new_tree[vy][0] != {}:
+                    new_tree = new_tree[vy]
+                else:
+                    new_tree = origTries[i]
+                p_gen_mask.append(0)
+            elif vy not in new_tree:
+                new_tree = [{}]
+                p_gen_mask.append(1)
+            else:
+                new_tree = new_tree[vy]
+                p_gen_mask.append(0)
+            new_trees.append(new_tree)
+            index_list.append(list(new_tree[-1]))
+
+        return new_trees, p_gen_mask, index_list
+
     def get_meetingKB_emb_map(
         self,
         query,
@@ -660,6 +1543,44 @@ class BeamSearchTransducer:
             )
         KBweight = torch.einsum("ijk,itj->itk", back_transform, KBweight)
         return KBembedding, KBweight
+
+    def get_acoustic_biasing_vector(
+        self,
+        encoder_out,
+        biasing_embed,
+        return_atten=False
+    ):
+        query = self.Qproj_acoustic(encoder_out).unsqueeze(0)
+        key   = self.Kproj(biasing_embed)
+        value = self.Vproj(biasing_embed)
+        # attention
+        qk    = torch.einsum("tk,jk->jt", key, query)
+        qk    = qk / math.sqrt(query.size(-1))
+        score = torch.nn.functional.softmax(qk, dim=-1)
+        attn  = torch.einsum("tk,jt->jk", value, score)
+        if return_atten:
+            return self.proj(attn).squeeze(0), score
+        else:
+            return self.proj(attn).squeeze(0)
+
+    def get_semantic_biasing_vector(
+        self,
+        decoder_out,
+        biasing_embed,
+        return_atten=False
+    ):
+        query = self.Qproj_semantic(decoder_out).unsqueeze(0)
+        key   = self.Kproj(biasing_embed)
+        value = self.Vproj(biasing_embed)
+        # attention
+        qk    = torch.einsum("tk,jk->jt", key, query)
+        qk    = qk / math.sqrt(query.size(-1))
+        score = torch.nn.functional.softmax(qk, dim=-1)
+        attn  = torch.einsum("tk,jt->jk", value, score)
+        if return_atten:
+            return self.proj(attn).squeeze(0), score
+        else:
+            return self.proj(attn).squeeze(0)
 
     def time_sync_decoding(self, enc_out: torch.Tensor) -> List[Hypothesis]:
         """Time synchronous beam search implementation.

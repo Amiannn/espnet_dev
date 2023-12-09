@@ -28,7 +28,8 @@ from espnet2.tasks.asr import ASRTask
 from espnet2.tasks.enh_s2t import EnhS2TTask
 from espnet2.tasks.lm import LMTask
 from espnet2.text.build_tokenizer import build_tokenizer
-from espnet2.text.Butils import BiasProc
+# from espnet2.text.Butils import BiasProc
+from espnet2.text.Butils_full import BiasProc
 from espnet2.text.hugging_face_token_id_converter import HuggingFaceTokenIDConverter
 from espnet2.text.token_id_converter import TokenIDConverter
 from espnet2.text.whisper_token_id_converter import OpenAIWhisperTokenIDConverter
@@ -47,6 +48,9 @@ from espnet.nets.scorer_interface import BatchScorerInterface
 from espnet.nets.scorers.ctc import CTCPrefixScorer
 from espnet.nets.scorers.length_bonus import LengthBonus
 from espnet.utils.cli_utils import get_commandline_args
+
+import os
+import pickle
 
 try:
     from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM
@@ -146,6 +150,8 @@ class Speech2Text:
                 charlist=asr_model.token_list,
             )
             asr_model.bprocessor = bprocessor
+        else:
+            asr_model.biasing = False
 
         if enh_s2t_task:
             asr_model.inherite_attributes(
@@ -210,14 +216,35 @@ class Speech2Text:
         # 4. Build BeamSearch object
         # biasing
         if getattr(asr_model, "biasing", False):
-            biasingbundle = {
-                "Qproj_acoustic": asr_model.Qproj_acoustic,
-                "Qproj_char": asr_model.Qproj_char,
-                "Kproj": asr_model.Kproj,
-                "ooKBemb": asr_model.ooKBemb,
-                "pointer_gate": asr_model.pointer_gate,
-                "gnn": getattr(asr_model, "gnn", None),
-            }
+            biasing_type = getattr(asr_model, "biasing_type", "tcpgen")
+            print(biasing_type)
+            if biasing_type == "tcpgen":
+                biasingbundle = {
+                    "Qproj_acoustic": asr_model.Qproj_acoustic,
+                    "Qproj_char": asr_model.Qproj_char,
+                    "Kproj": asr_model.Kproj,
+                    "ooKBemb": asr_model.ooKBemb,
+                    "pointer_gate": asr_model.pointer_gate,
+                    "gnn": getattr(asr_model, "gnn", None),
+                }
+            elif biasing_type == "contextualbiasing":
+                biasingbundle = {
+                    "Qproj_acoustic": asr_model.Qproj_acoustic,
+                    "Kproj": asr_model.Kproj,
+                    "Vproj": asr_model.Vproj,
+                    "proj" : asr_model.proj,
+                    "CbRNN": asr_model.CbRNN,
+                    "ooKBemb": asr_model.ooKBemb,
+                }
+            elif biasing_type == "contextualbiasing_predictor":
+                biasingbundle = {
+                    "Qproj_semantic": asr_model.Qproj_semantic,
+                    "Kproj": asr_model.Kproj,
+                    "Vproj": asr_model.Vproj,
+                    "proj" : asr_model.proj,
+                    "CbRNN": asr_model.CbRNN,
+                    "ooKBemb": asr_model.ooKBemb,
+                }
         else:
             biasingbundle = None
 
@@ -234,7 +261,7 @@ class Speech2Text:
 
             if transducer_conf is None:
                 transducer_conf = {}
-
+            logging.info(f'biasing method type: {getattr(asr_model, "biasing_type", "tcpgen")}')
             beam_search_transducer = BeamSearchTransducer(
                 decoder=asr_model.decoder,
                 joint_network=asr_model.joint_network,
@@ -245,6 +272,7 @@ class Speech2Text:
                 multi_blank_indices=multi_blank_indices,
                 token_list=token_list,
                 biasing=getattr(asr_model, "biasing", False),
+                biasing_type=getattr(asr_model, "biasing_type", "tcpgen"),
                 deepbiasing=getattr(asr_model, "deepbiasing", False),
                 BiasingBundle=biasingbundle,
                 **transducer_conf,
@@ -449,6 +477,8 @@ class Speech2Text:
         self,
         speech: Union[torch.Tensor, np.ndarray],
         blist: list = None,
+        idxs: list = [],
+        output_dir: str=''
     ) -> Union[
         ListOfHypothesis,
         Tuple[
@@ -512,13 +542,48 @@ class Speech2Text:
                 enc = enc[0]
             assert len(enc) == 1, len(enc)
 
+            logging.info(f'idx: {", ".join(idxs)}')
+            logging.info(f'output_dir: {output_dir}')
             # c. Passed the encoder result and the beam search
             lextree = None
+            logging.info(f'blist: {blist}')
             if blist is not None:
-                bwords = self.asr_model.bprocessor.encode_spec_blist(blist)
-                lextree = self.asr_model.bprocessor.construct_blist(bwords)
-            results = self._decode_single_sample(enc[0], lextree)
+                bwords            = self.asr_model.bprocessor.encode_spec_blist(blist)
+                # lextree, worddict = self.asr_model.bprocessor.construct_blist(bwords)
+                
+                # if self.asr_model.sampling_type == "fuzzy":
+                if False:
+                    sample_fn = self.asr_model.bprocessor.fuzzy_sampling_methods
+                    worddict, cb_tokens, cb_tokens_len = self.asr_model.bprocessor.construct_blist(bwords, sample_fn)
+                    logging.info(f'using fuzzy sampling type')
+                else:
+                    sample_fn = self.asr_model.bprocessor.random_sampling_methods
+                    worddict, cb_tokens, cb_tokens_len = self.asr_model.bprocessor.construct_blist(bwords, sample_fn)
+                    logging.info(f'using random sampling type')
+                
+                logging.info(f'bprocessor: {self.asr_model.bprocessor}')
+                logging.info(f'blist: {", ".join(blist)}')
 
+            if self.asr_model.biasing_type == "tcpgen":    
+                raise Exception("Not implemented!")
+                # from espnet.lm.lm_utils import make_lexical_tree
+                # lextree = make_lexical_tree(worddict, self.asr_model.bprocessor.chardict, -1)
+                # results = self._decode_single_sample(enc[0], lextree=lextree)
+            elif self.asr_model.biasing_type == "contextualbiasing":
+                # from espnet.lm.lm_utils import make_lexical_tree_idx
+                # lextree = make_lexical_tree_idx(worddict, self.asr_model.bprocessor.chardict, -1)
+                # cb_tokens, cb_tokens_len = self.asr_model.bprocessor.contextual_biasing_list(worddict)
+                # results = self._decode_single_sample(enc[0], cb_tokens=cb_tokens, cb_tokens_len=cb_tokens_len, lextree=lextree)
+                results = self._decode_single_sample(
+                    enc[0], 
+                    cb_tokens=cb_tokens, 
+                    cb_tokens_len=cb_tokens_len
+                )
+            elif self.asr_model.biasing_type == "contextualbiasing_predictor":
+                # cb_tokens, cb_tokens_len = self.asr_model.bprocessor.contextual_biasing_list(worddict)
+                results = self._decode_single_sample(enc[0], cb_tokens=cb_tokens, cb_tokens_len=cb_tokens_len)
+            else:
+                results = self._decode_single_sample(enc[0])
             # Encoder intermediate CTC predictions
             if intermediate_outs is not None:
                 encoder_interctc_res = self._decode_interctc(intermediate_outs)
@@ -545,10 +610,23 @@ class Speech2Text:
 
         return res
 
-    def _decode_single_sample(self, enc: torch.Tensor, lextree: list = None):
+    def _decode_single_sample(
+        self, 
+        enc: torch.Tensor, 
+        lextree: list = None, 
+        cb_tokens: torch.Tensor = None, 
+        cb_tokens_len: torch.Tensor = None
+    ):
         if self.beam_search_transducer:
             logging.info("encoder output length: " + str(enc.shape[0]))
-            nbest_hyps = self.beam_search_transducer(enc, lextree=lextree)
+            if self.asr_model.biasing_type == "tcpgen":
+                nbest_hyps = self.beam_search_transducer(enc, lextree=lextree)
+            elif self.asr_model.biasing_type == "contextualbiasing":    
+                nbest_hyps = self.beam_search_transducer(enc, cb_tokens=cb_tokens, cb_tokens_len=cb_tokens_len, lextree=lextree)
+            elif self.asr_model.biasing_type == "contextualbiasing_predictor":    
+                nbest_hyps = self.beam_search_transducer(enc, cb_tokens=cb_tokens, cb_tokens_len=cb_tokens_len)
+            else:
+                nbest_hyps = self.beam_search_transducer(enc)
 
             best = nbest_hyps[0]
             logging.info(f"total log probability: {best.score:.2f}")
@@ -556,8 +634,45 @@ class Speech2Text:
                 f"normalized log probability: {best.score / len(best.yseq):.2f}"
             )
             logging.info(
-                "best hypo: " + "".join(self.converter.ids2tokens(best.yseq[1:])) + "\n"
+                "best hypo: " + "".join(self.converter.ids2tokens(best.yseq[1:]))
             )
+            logging.info(
+                "best tokens: " + " ".join(self.converter.ids2tokens(best.yseq[1:]))
+            )
+            if best.pgens != None:
+                logging.info(
+                    "best pgens: " + " ".join([f'{d:.2f}' for d in best.pgens[1:]])
+                )
+                logging.info(
+                    "model probs: " + " ".join([f'{d:.2f}' for d in best.top_model_prob[1:]])
+                )
+                logging.info(
+                    "model tokens: " + " ".join([f'{d:.2f}' for d in best.top_model_pred[1:]])
+                )
+                logging.info(
+                    "tcpgen probs: " + " ".join([f'{d:.2f}' for d in best.top_tcpgen_prob[1:]])
+                )
+                logging.info(
+                    "tcpgen tokens: " + " ".join([f'{d:.2f}' for d in best.top_tcpgen_pred[1:]])
+                )
+                logging.info(
+                    "model topk probs: " + json.dumps(best.topk_model_prob[1:])
+                )
+                logging.info(
+                    "model topk tokens: " + json.dumps(best.topk_model_pred[1:])
+                )
+                logging.info(
+                    "tcpgen topk probs: " + json.dumps(best.topk_tcpgen_prob[1:])
+                )
+                logging.info(
+                    "tcpgen topk tokens: " + json.dumps(best.topk_tcpgen_pred[1:])
+                )
+                logging.info(
+                    f"token lengths: {len(best.yseq[1:])}"
+                )
+                logging.info(
+                    f"pgens lengths: {len(best.pgens[1:])}" + "\n"
+                )
         elif self.hugging_face_model:
             num_beams = self.hugging_face_decoder_conf["num_beams"]
             enc = self.hugging_face_linear_in(enc).unsqueeze(0)
@@ -776,6 +891,10 @@ def inference(
         model_tag=model_tag,
         **speech2text_kwargs,
     )
+    # print(f'> ' * 30)
+    # print(str(speech2text_kwargs))
+    # print(f'> ' * 30)
+    # print(model_tag)
 
     # 3. Build data-iterator
     loader = ASRTask.build_streaming_iterator(
@@ -792,7 +911,11 @@ def inference(
 
     # load biasing list
     blist_perutt = None
-    if speech2text.asr_model.biasing and perutt_blist != "":
+    logging.info(f'asr_model biasing: {speech2text.asr_model.biasing}')
+    if getattr(speech2text.asr_model, "biasing", False) and perutt_blist != "":
+    # if speech2text.asr_model.biasing and perutt_blist != "":
+    # if perutt_blist != "":
+        # speech2text.asr_model.biasing = True
         with open(perutt_blist) as fin:
             blist_perutt = json.load(fin)
     elif perutt_blist == "":
@@ -800,8 +923,11 @@ def inference(
         if speech2text.asr_model.use_transducer_decoder:
             speech2text.beam_search_transducer.biasing = False
 
+    debug_embed_results = {n: [] for n in range(1, 11)}
+
     # 7 .Start for-loop
     # FIXME(kamo): The output format should be discussed about
+    counter = 0
     with DatadirWriter(output_dir) as writer:
         for keys, batch in loader:
             assert isinstance(batch, dict), type(batch)
@@ -814,6 +940,8 @@ def inference(
             try:
                 if blist_perutt is not None and speech2text.asr_model.biasing:
                     batch["blist"] = blist_perutt[keys[0]]
+                batch["idxs"]       = keys
+                batch["output_dir"] = output_dir
                 results = speech2text(**batch)
             except TooShortUttError as e:
                 logging.warning(f"Utterance {keys} {e}")
@@ -855,7 +983,6 @@ def inference(
                 ):
                     # Create a directory: outdir/{n}best_recog
                     ibest_writer = writer[f"{n}best_recog"]
-
                     # Write the result to each file
                     ibest_writer["token"][key] = " ".join(token)
                     ibest_writer["token_int"][key] = " ".join(map(str, token_int))
@@ -863,6 +990,14 @@ def inference(
 
                     if text is not None:
                         ibest_writer["text"][key] = text
+
+                    debug_embed_results[n].append({
+                        'idx': key,
+                        'token': token,
+                        'token_int': token_int,
+                        'topk_logp': hyp.topk_logp,
+                        'topk_ids' : hyp.topk_ids
+                    })
 
                 # Write intermediate predictions to
                 # encoder_interctc_layer<layer_idx>.txt
@@ -872,7 +1007,16 @@ def inference(
                         ibest_writer[f"encoder_interctc_layer{idx}.txt"][
                             key
                         ] = " ".join(text)
-
+            # counter += 1
+            # if counter > 3:
+            #     break
+    output_embed_path = os.path.join(output_dir, 'embed.pickle')
+    with open(output_embed_path, 'wb') as fr:
+        pickle.dump(
+            debug_embed_results, 
+            fr, 
+            protocol=pickle.HIGHEST_PROTOCOL
+        )
 
 def get_parser():
     parser = config_argparse.ArgumentParser(
@@ -1113,6 +1257,8 @@ def main(cmd=None):
     args = parser.parse_args(cmd)
     kwargs = vars(args)
     kwargs.pop("config", None)
+    print('_' * 30)
+    print(json.dumps(args.__dict__, indent=4))
     inference(**kwargs)
 
 

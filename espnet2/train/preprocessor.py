@@ -387,7 +387,6 @@ class CommonPreprocessor(AbsPreprocessor):
                     data[self.speech_name] = self.data_aug(
                         data[self.speech_name], self.fs
                     )
-
             if self.speech_volume_normalize is not None:
                 speech = data[self.speech_name]
                 ma = np.max(np.abs(speech))
