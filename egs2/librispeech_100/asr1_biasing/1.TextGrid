@@ -11,7 +11,7 @@ item []:
 		name = "subword"
 		xmin = 0.0
 		xmax = 2
-		intervals: size = 14
+		intervals: size = 12
 			intervals [1]:
 				xmin = 0.0
 				xmax = 0.40714285714285714
@@ -34,37 +34,29 @@ item []:
 				text = "RA"
 			intervals [6]:
 				xmin = 0.6514285714285715
-				xmax = 0.6921428571428572
+				xmax = 0.7328571428571429
 				text = ""
 			intervals [7]:
-				xmin = 0.6921428571428572
-				xmax = 0.7328571428571429
-				text = "W"
-			intervals [8]:
 				xmin = 0.7328571428571429
-				xmax = 0.7735714285714286
-				text = ""
-			intervals [9]:
-				xmin = 0.7735714285714286
 				xmax = 1.1807142857142858
 				text = "N▁"
-			intervals [10]:
+			intervals [8]:
 				xmin = 1.1807142857142858
 				xmax = 1.2214285714285715
 				text = ""
-			intervals [11]:
+			intervals [9]:
 				xmin = 1.2214285714285715
 				xmax = 1.425
 				text = "SO"
-			intervals [12]:
+			intervals [10]:
 				xmin = 1.425
 				xmax = 1.4657142857142857
 				text = ""
-			intervals [13]:
+			intervals [11]:
 				xmin = 1.4657142857142857
 				xmax = 1.9135714285714287
 				text = "UP▁"
-			intervals [14]:
+			intervals [12]:
 				xmin = 1.9135714285714287
 				xmax = 2
 				text = ""

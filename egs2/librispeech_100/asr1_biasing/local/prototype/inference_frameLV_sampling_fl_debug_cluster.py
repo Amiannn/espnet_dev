@@ -28,12 +28,12 @@ from fuzzywuzzy import process
 
 import random
 
-seed = 67
+seed = 12
 random.seed(seed)
 torch.manual_seed(seed)
 np.random.seed(seed)
 
-debug_path = './local/prototype/debug/single'
+debug_path = './local/prototype/debug/cluster'
 
 def distance(a, b):
     return fuzz.ratio(a, b) / 100
@@ -68,107 +68,19 @@ def sample_static_negative(words, bwords, k=5):
         idxs.append(idx)
     return torch.cat(idxs, dim=0)
 
-def sample_klevel_negative(bword_embeds, gold_idx):
-    cb_proj  = model.Kproj(bword_embeds[:-1, :])
-    indexis  = faiss.IndexFlatIP(cb_proj.shape[-1])
-    indexis.add(cb_proj)
-
-    gold_embed = cb_proj[gold_idx]
-
-    D, I        = indexis.search(gold_embed, 8 + 1)
-    exhaust_idx = torch.from_numpy(I[:, 1:].reshape(-1))
-    exhaust_idx = torch.unique(exhaust_idx, sorted=False)
-    return exhaust_idx
-
-def sample_flevel_negative(encoder_out, bword_embeds):
-    enc_proj = model.Qproj_acoustic(encoder_out).squeeze(0)
-    # enc_proj = enc_proj / torch.norm(enc_proj, dim=0)
-    cb_proj  = model.Kproj(bword_embeds[:-1, :])
-    # cb_proj  = cb_proj / torch.norm(cb_proj, dim=0)
-    indexis  = faiss.IndexFlatIP(cb_proj.shape[-1])
-    indexis.add(cb_proj)
-
-    D, I        = indexis.search(enc_proj, 2)
-    exhaust_idx = torch.from_numpy(I.reshape(-1))
-    exhaust_idx = torch.unique(exhaust_idx, sorted=False)
-    return exhaust_idx
-
-def sample_clevel_negative(encoder_out, bword_embeds, csize=3):
-    enc_proj = model.Qproj_acoustic(encoder_out).squeeze(0)
-    kmeans   = faiss.Kmeans(enc_proj.shape[-1], csize, niter=20, verbose=True, gpu=True)
-    kmeans.train(enc_proj)
-    enc_centers = kmeans.centroids
-
-    cb_proj  = model.Kproj(bword_embeds[:-1, :])
-    indexis  = faiss.IndexFlatIP(cb_proj.shape[-1])
-    indexis.add(cb_proj)
-
-    D, I        = indexis.search(enc_centers, 5)
-    cluster_idx = torch.from_numpy(I.reshape(-1))
-    cluster_idx = torch.unique(cluster_idx, sorted=False)
-    return cluster_idx
-
-def sample_flevel_kcluster_negative(encoder_out, bword_embeds, csize=1000):
-    enc_proj = model.Qproj_acoustic(encoder_out).squeeze(0)
-    # enc_proj = enc_proj / torch.norm(enc_proj, dim=0)
-    cb_proj  = model.Kproj(bword_embeds[:-1, :])
-    # cb_proj  = cb_proj / torch.norm(cb_proj, dim=0)
-    kmeans   = faiss.Kmeans(cb_proj.shape[-1], csize, niter=20, verbose=True, gpu=True)
-    kmeans.train(cb_proj)
-    key2ids  = kmeans.index.search(x=cb_proj, k=1)[1].reshape(-1).tolist()
-    id2group = {}
-    for i, key in enumerate(key2ids):
-        id2group[key] = id2group[key] + [i] if key in id2group else [i]
-    for id in id2group:
-        id2group[id] = torch.tensor(id2group[id], dtype=torch.int)
-    cb_centers = kmeans.centroids
-    indexis    = faiss.IndexFlatIP(cb_centers.shape[-1])
-    indexis.add(cb_centers)
-
-    D, I         = indexis.search(enc_proj, 1)
-    kcluster_idx = torch.from_numpy(I.reshape(-1))
-    kcluster_idx = torch.unique(kcluster_idx, sorted=False).tolist()
-    kcluster_idx = torch.cat([
-        torch.unique(
-            id2group[idx][
-                torch.randint(len(id2group[idx]), (5,))
-            ],
-            sorted=False
-        ) for idx in kcluster_idx
-    ], dim=0).to(torch.long)
-    return kcluster_idx
-
-def sample_flevel_qcluster_kcluster_negative(encoder_out, bword_embeds, csize=1000):
-    enc_proj = model.Qproj_acoustic(encoder_out).squeeze(0)
-    kmeans   = faiss.Kmeans(enc_proj.shape[-1], 3, niter=20, verbose=True, gpu=True)
-    kmeans.train(enc_proj)
-    enc_centers = kmeans.centroids
-
-    cb_proj  = model.Kproj(bword_embeds[:-1, :])
-    kmeans   = faiss.Kmeans(cb_proj.shape[-1], csize, niter=20, verbose=True, gpu=True)
-    kmeans.train(cb_proj)
-    key2ids  = kmeans.index.search(x=cb_proj, k=1)[1].reshape(-1).tolist()
-    id2group = {}
-    for i, key in enumerate(key2ids):
-        id2group[key] = id2group[key] + [i] if key in id2group else [i]
-    for id in id2group:
-        id2group[id] = torch.tensor(id2group[id], dtype=torch.int)
-    cb_centers = kmeans.centroids
-    indexis    = faiss.IndexFlatIP(cb_centers.shape[-1])
-    indexis.add(cb_centers)
-
-    D, I         = indexis.search(enc_proj, 1)
-    kcluster_idx = torch.from_numpy(I.reshape(-1))
-    kcluster_idx = torch.unique(kcluster_idx, sorted=False).tolist()
-    kcluster_idx = torch.cat([
-        torch.unique(
-            id2group[idx][
-                torch.randint(len(id2group[idx]), (5,))
-            ],
-            sorted=False
-        ) for idx in kcluster_idx
-    ], dim=0).to(torch.long)
-    return kcluster_idx
+# def get_negative_samples(model, bpemodel, bword_embeds, bwords, idxs, types, use_oov=True):
+#     _bwords = bwords
+#     if use_oov:
+#         idxs.append(torch.tensor([len(bwords)]))
+#         types.append('OOV')
+#         _bwords = bwords + ['OOV']
+#     labels       = [_bwords[idx] for idx in torch.cat(idxs)]
+#     embeds = encode_biasword(model, bpemodel, labels)[:-1, :]
+#     print(f'bword embeds: {embeds.shape}')
+#     # embeds       = [bword_embeds[idx] for idx in idxs]
+#     embeds_class = torch.cat([torch.zeros(idxs[i].shape[0]) + i for i in range(len(idxs))])
+#     # embeds       = torch.cat(embeds, dim=0)
+#     return embeds, labels, embeds_class, types
 
 @torch.no_grad()
 def get_negative_samples(bword_embeds, bwords, idxs, types, use_oov=True):
@@ -185,11 +97,6 @@ def get_negative_samples(bword_embeds, bwords, idxs, types, use_oov=True):
 
 @torch.no_grad()
 def get_biasingword(tokens):
-    # biasingwords, _, _, _, _  = model.bprocessor.select_biasing_words(
-    #     tokens.tolist(), 
-    #     cb=True,
-    #     ret_worddict=True
-    # )
     biasingwords, _, _, _  = model.bprocessor.select_biasing_words(
         tokens.tolist(),
         sampling_type="random",
@@ -197,10 +104,10 @@ def get_biasingword(tokens):
     return [''.join(word).replace('▁', '') for word in biasingwords]
 
 def plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, cb_labels, uttid='test'):
-    Color  = ["#4C72B0", "#FFA500", "#808080", "#008000", "#E377C2", "#17BECF", "#BCBD22", "#FF0000", ]
-    Shape  = ['o', '^', 'o', 'D', '*', 'p', 'h', 'x']
-    plt.rcParams.update({'font.size': 8})
-    # plt.rcParams.update({'font.size': 2})
+    Color  = ["#4C72B0", "#FFA500", "#008000", "#808080", "#E377C2", "#17BECF", "#BCBD22", "#FF0000", ]
+    Shape  = ['o', '^', 's', 'D', '*', 'p', 'h', 'x']
+    # plt.rcParams.update({'font.size': 6})
+    plt.rcParams.update({'font.size': 2})
 
     # unit vector
     # enc_embeds = torch.mean(enc_embeds[16:21, :], dim=0).unsqueeze(0)
@@ -210,11 +117,8 @@ def plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, cb_labels, uttid
     enc_embeds = enc_embeds / torch.norm(enc_embeds, dim=-1).unsqueeze(-1)
     cb_embeds  = cb_embeds / torch.norm(cb_embeds, dim=-1).unsqueeze(-1)
 
-    # TODO: plot 11 ~ 22 FL features
-    print(f'extract enc_embeds shape: {enc_embeds.shape}')
-
     # plot scatter
-    X = torch.cat([enc_embeds, cb_embeds,], dim=0)
+    X = torch.cat([enc_embeds, cb_embeds, enc_embeds, enc_embeds], dim=0)
     C = torch.cat([
         torch.zeros(enc_embeds.shape[0]),
         cb_class + 1
@@ -222,29 +126,20 @@ def plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, cb_labels, uttid
 
     colors = [Color[c.item()] for c in C]
     shapes = [Shape[c.item()] for c in C]
-    label  = [(['Query'] + cb_types)[c.item()] for c in C]
-    tsne = TSNE(n_components=2, verbose=1, perplexity=10)
+    label  = [(['encoder outputs'] + cb_types)[c.item()] for c in C]
+    tsne = TSNE(n_components=2, verbose=1, random_state=123)
     X = tsne.fit_transform(X.detach())
-    X = torch.from_numpy(X[:enc_embeds.shape[0] + cb_embeds.shape[0]])
-    # d = torch.max(X, dim=-1) - torch.min(X, dim=-1)
-    # X = (X - torch.min(X, dim=-1)) / d
+    X = X[:enc_embeds.shape[0] + cb_embeds.shape[0]]
+
     label_hited = []
-    plt.figure(figsize=(5, 5))
-    plt.tick_params(
-        left=False, 
-        right=False, 
-        labelleft=False, 
-        labelbottom=False, 
-        bottom=False
-    ) 
-    for i in range(X.shape[0]):
+    for i in range(X.shape[0] - 1, 0, -1):
         if label[i] not in label_hited:
             plt.scatter(
                 x=X[i, 0], 
                 y=X[i, 1], 
                 c=colors[i], 
-                # s=2, 
-                s=20, 
+                s=2, 
+                # s=5, 
                 marker=shapes[i],
                 label=label[i]
             )
@@ -254,8 +149,8 @@ def plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, cb_labels, uttid
                 x=X[i, 0], 
                 y=X[i, 1], 
                 c=colors[i], 
-                # s=2, 
-                s=20, 
+                s=2, 
+                # s=5, 
                 marker=shapes[i],
             )
         
@@ -263,12 +158,12 @@ def plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, cb_labels, uttid
     for i in range(enc_embeds.shape[0]):
         x, y = X[i, 0], X[i, 1]
         texts.append(plt.text(x, y, i))
-    # start = enc_embeds.shape[0]
-    # for i in range(cb_embeds.shape[0]):
-    #     x, y = X[start + i, 0], X[start + i, 1]
-    #     texts.append(plt.text(x, y, cb_labels[i]))
-    adjust_text(texts)
+    start = enc_embeds.shape[0]
+    for i in range(cb_embeds.shape[0]):
+        x, y = X[start + i, 0], X[start + i, 1]
+        texts.append(plt.text(x, y, cb_labels[i]))
     plt.legend()
+    adjust_text(texts)
     output_path = os.path.join(debug_path, f'{uttid}_tsne.pdf')
     plt.savefig(output_path, format="pdf", bbox_inches="tight")
     plt.clf()
@@ -303,11 +198,11 @@ def plot_attention_map(
     ]
     print(f'xlabels: {len(xlabels)}')
 
-    plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, labels)
+    # plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, labels)
     labels = [f'{labels[i]} {int(cb_class[i])}' for i in range(len(labels))]
 
     # draw attention map
-    fig, axes = plt.subplots(1, 1, figsize=(10, 27))
+    fig, axes = plt.subplots(1, 1, figsize=(40, 20))
     axes.xaxis.set_ticks(np.arange(0, attention.shape[1], 1))
     axes.yaxis.set_ticks(np.arange(0, attention.shape[0], 1))
     axes.set_xticks(np.arange(-.5, attention.shape[1], 10), minor=True)
@@ -327,80 +222,74 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
     bword2idx = {bwords[i]: i for i in range(len(bwords))}
     speech    = speech.unsqueeze(0)
     lengths   = speech.new_full([1], dtype=torch.long, fill_value=speech.size(1))
+    tokens    = encode_text(bpemodel, text).unsqueeze(0)
 
-    tokens = encode_text(bpemodel, text).unsqueeze(0)
     encoder_out, enc_olens = model.encode(speech, lengths)
     print(f'encoder_out: {encoder_out.shape}')
 
-    start_frame = 11
-    end_frame   = 22
+    queries = model._encode_query_nongrad(encoder_out)
+    B, S, D = queries.shape
+    print(f'queries: {queries.shape}')
+
+    model.clusters = 5
+    group_idx = model.create_query_groups(queries).to(torch.int64)
+    B, N = group_idx.shape
+    print(f'group_idx: {group_idx}')
+    group_idx = group_idx.view(B, N, 1).expand(-1, -1, D)
+    print(f'group_idx: {group_idx.shape}')
+
+    unique_groups, groups_count = group_idx.unique(dim=1, return_counts=True)
+    print(f'unique_groups: {unique_groups.shape}')
+    query_centroids = torch.zeros_like(unique_groups, dtype=torch.float).scatter_add_(
+        1, group_idx, queries
+    )
+    query_centroids = query_centroids / groups_count.float().unsqueeze(1)
+    print(f'query_centroids: {query_centroids.shape}')
+
+    # Qsampling
+    Q_length               = 2
+    model.bprocessor.sdrop = 0.0
+    Rand_length            = model.bprocessor.maxlen - Q_length
+    retval = model.bprocessor.select_biasing_words(
+        tokens.tolist(),
+        query_centroids,
+        # queries,
+        sampling_type="framelevel_qsampling",
+        topk=Q_length,
+        unique_sorted=False
+    )
+    (biasingwords, worddict, cb_tokens, cb_tokens_len, mask) = retval
+
+    bword2idx = model.bprocessor.bword2idx
+    idx       = [bword2idx["".join(word).replace('▁', '')] for word in worddict]
+    print(f'cb_tokens shape: {cb_tokens.shape}')
+    Q_idx     = torch.tensor(idx[Rand_length:])
+    Rand_idx  = torch.tensor(idx[:Rand_length])
+    Q_mask    = mask[:, :, Rand_length:]
+    Rand_mask = mask[:, :, :Rand_length]
 
     # real baising words
     utt_bwords  = get_biasingword(tokens)
     utt_idx     = torch.tensor([bword2idx[bword] for bword in utt_bwords])
     print(f'utt_idx: {utt_idx}')
-    
-    # exhausted biasing words
-    exhaust_idx = sample_flevel_negative(encoder_out[:, start_frame:end_frame, :], bword_embeds)
-    print(f'exhaust_idx: {exhaust_idx}')
-
-    # random baising words
-    rand_num = exhaust_idx.shape[0]
-    rand_idx = torch.randint(len(bwords) - 1, (rand_num * 5, ))
-    print(f'rand_idx: {rand_idx}')
-
-    # static baising words
-    # static_idx = sample_static_negative(text.split(' '), bwords, k=1)
-    static_idx = sample_static_negative(utt_bwords, bwords, k=8)
-    print(f'static_idx: {static_idx}')
-    print(f'static_idx: {static_idx.shape}')
-
-    # key level biasing words
-    exhaust_k_idx = sample_klevel_negative(bword_embeds, utt_idx)
-    print(f'exhaust_k_idx: {exhaust_k_idx}')
-    print(f'exhaust_k_idx: {exhaust_k_idx.shape}')
-    # # query-clustering baising words
-    # cluster_idx = sample_clevel_negative(encoder_out, bword_embeds, csize=3)
-    # print(f'cluster_idx: {cluster_idx}')
-
-    # # key-clustering biasing words
-    # kcluster_idx = sample_flevel_kcluster_negative(encoder_out, bword_embeds, csize=10000)
-    # print(f'kcluster_idx: {kcluster_idx}')
-    # print(f'kcluster_idx: {kcluster_idx.shape}')
-
-    # # query & key clustering biasing word
-    # qkcluster_idx = sample_flevel_qcluster_kcluster_negative(encoder_out, bword_embeds, csize=10000)
-    # print(f'qkcluster_idx: {qkcluster_idx}')
-    # print(f'qkcluster_idx: {qkcluster_idx.shape}')
 
     # contextual biasing embeddings
     idxs  = [
-        utt_idx.to(torch.long), 
-        rand_idx.to(torch.long), 
-        # static_idx.to(torch.long), 
-        exhaust_k_idx.to(torch.long),
-        exhaust_idx.to(torch.long), 
-        # cluster_idx.to(torch.long), 
-        # kcluster_idx.to(torch.long), 
-        # qkcluster_idx.to(torch.long)
+        # utt_idx.to(torch.long), 
+        Rand_idx.to(torch.long), 
+        Q_idx.to(torch.long),
     ]
     types = [
-        'Gold', 
-        'Random', 
-        # 'Edit-distance BW', 
-        'ANN-HNW',
-        'Q-HNW',
-        # 'frame-level biasing words(query-cluster)',
-        # 'frame-level biasing words(key-cluster)',
-        # 'frame-level biasing words(query key-cluster)',
+        # 'Gold BW', 
+        'Random BW', 
+        'Q-Sampling BW',
     ]
+
     cb_embed, labels, cb_class, cb_types = get_negative_samples(
         bword_embeds, 
         bwords, 
         idxs, 
-        types,
-        use_oov=False
-        # use_oov=True
+        types
     )
 
     decoder_in, target, t_len, u_len = get_transducer_task_io(
@@ -412,10 +301,18 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
     decoder_out = model.decoder(decoder_in)
     print(f'decoder_out: {decoder_out.shape}')
 
+    mask = torch.cat([Rand_mask, Q_mask], axis=-1)
+    print(f'mask shape: {mask.shape}')
     aco_bias, aco_atten = model.get_acoustic_biasing_vector(
-        encoder_out, cb_embed, return_atten=True
+        encoder_out, 
+        cb_embed, 
+        return_atten=True, 
+        # mask=mask
     )
-
+    print(f'aco_atten shape: {aco_atten.shape}')
+    print(f'mask shape: {mask.shape}')
+    # aco_atten = mask
+    
     lin_encoder_out = model.joint_network.lin_enc(encoder_out)
     lin_decoder_out = model.joint_network.lin_dec(decoder_out)
     lin_encoder_out = lin_encoder_out + aco_bias
@@ -434,7 +331,7 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
         target[0], 
         logp, 
         aco_atten, 
-        encoder_out.squeeze(0)[start_frame:end_frame, :],
+        encoder_out.squeeze(0),
         cb_embed,
         labels,
         cb_class,
@@ -445,8 +342,9 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
 if __name__ == "__main__":
     spm_path   = "./data/en_token_list/bpe_unigram600suffix/bpe.model"
     token_path = "./data/en_token_list/bpe_unigram600suffix/tokens.txt"
-    model_conf = "./conf/tuning/train_rnnt_freeze_contextual_biasing.yaml"
-    model_path = "./exp_old/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_suffix/valid.loss.ave_10best.pth"
+    model_conf = "./conf/tuning/train_rnnt_freeze_contextual_biasing_sampling_FL_Qsampling.yaml"
+    model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_suffix/valid.loss.ave_10best.pth"
+    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_QSamlping_warmup_suffix/valid.loss.best.pth"
     stats_path = "./exp/asr_stats_raw_en_bpe600_spsuffix/train/feats_stats.npz"
     rare_path  = "./local/rareword_f15.txt"
     scp_path   = "./data/train_clean_100/wav.scp"
@@ -462,16 +360,20 @@ if __name__ == "__main__":
         spm_path, 
         model_path
     )
+    model.eval()
 
     texts  = {d[0]: " ".join(d[1:]) for d in read_file(ref_path, sp=' ')}
     wavscp = [[d[0], d[1], texts[d[0]]] for d in read_file(scp_path, sp=' ')]
     bwords = [d[0] for d in read_file(rare_path, sp=' ')]
 
-    bword_embeds = encode_biasword(model, bpemodel, bwords)
-
     encs = []
     enc_lengths = []
     
+    embed_matrix = model.get_bias_embeds()
+    model.bprocessor.build_index(embed_matrix, model.CbRNN, model.Kproj, use_gpu=False)
+    bword_embeds = encode_biasword(model, bpemodel, bwords)
+
+    model.bprocessor.maxlen = 20
     for idx, audio_path, text in wavscp:
         if idx != "1963-142776-0027":
             continue

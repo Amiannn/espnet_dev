@@ -46,7 +46,9 @@ model_conf:
     biasing: true
     freeze_enc_dec: true
     biasing_type: 'contextualbiasing'
-    sampling_type: 'framelevel_qsampling'
+    sampling_type: 'random'
+    clusters: 10
+    topk: 2
 
 frontend_conf:
     n_fft: 512
@@ -58,7 +60,7 @@ num_workers: 8
 batch_type: numel
 batch_bins: 1500000
 accum_grad: 32
-max_epoch: 200
+max_epoch: 100
 patience: none
 init: none
 best_model_criterion:

@@ -9,12 +9,10 @@ train_set="train_clean_100"
 valid_set="dev"
 test_sets="test_clean"
 
-asr_config=conf/tuning/train_rnnt_freeze_contextual_biasing_sampling_FL_Qsampling.yaml
+asr_config=conf/exp/train_rnnt_freeze_cb_ANN_HNP_small_lr.yaml
 inference_config=conf/decode_asr.yaml
-asr_tag=finetune_freeze_conformer_transducer_contextual_biasing_proj_QSamlping
-
-pretrained_model=/share/nas165/amian/experiments/speech/tcpgen/espnet/egs2/librispeech_100/asr1/exp/asr_train_asr_transducer_conformer_e15_linear1024_raw_en_bpe600_use_wandbtrue_sp_suffix/valid.loss.ave_10best.pth
-# pretrained_model=/share/nas165/amian/experiments/speech/tcpgen/espnet/egs2/librispeech_100/asr1_biasing/exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_suffix/114epoch.pth
+asr_tag=finetune_freeze_ct_enc_cb_with_ANN_hnp_warmup_small_lr
+pretrained_model=exp/asr_finetune_freeze_ct_enc_cb_suffix/valid.loss.47epoch.pth
 
 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=0 ./asr.sh \
     --lang en \
@@ -36,11 +34,10 @@ CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=0 ./asr.sh \
     --test_sets "${test_sets}" \
     --lm_train_text "data/${train_set}/text" \
     --asr_tag ${asr_tag} \
-    --inference_asr_model valid.loss.best.pth \
+    --asr_args "--use_wandb true --wandb_project Contextualize_ASR" \
+    --inference_asr_model valid.loss.ave_10best.pth \
     --biasing true \
     --bpe_train_text "data/${train_set}/text" \
-    --asr_args "--use_wandb true" \
     --pretrained_model $pretrained_model \
     --ignore_init_mismatch true \
     "$@"
-

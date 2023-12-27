@@ -1,10 +1,10 @@
 # Trained with A100 (80 GB) x 1 GPUs.
 encoder: conformer
 encoder_conf:
-    output_size: 256
-    attention_heads: 4
-    linear_units: 1024
-    num_blocks: 15
+    output_size: 512
+    attention_heads: 8
+    linear_units: 2048
+    num_blocks: 12
     dropout_rate: 0.1
     positional_dropout_rate: 0.1
     attention_dropout_rate: 0.1
@@ -22,16 +22,14 @@ decoder: transducer
 decoder_conf:
     rnn_type: lstm
     num_layers: 1
-    hidden_size: 256
+    hidden_size: 512
     dropout: 0.1
     dropout_embed: 0.2
 
 joint_net_conf:
-    joint_space_size: 320
+    joint_space_size: 640
 
-# model: espnet
 model: contextualbiasing_sampling_espnet
-# model: tcpgen_espnet
 model_conf:
     ctc_weight: 0.0
     report_cer: False
@@ -39,14 +37,14 @@ model_conf:
     # TCPGen for contextual biasing
     biasinglist: local/rareword_f15.txt
     bmaxlen: 200
-    # bmaxlen: 10
     bdrop: 0.0
+    battndim: 512
+    # special sampling methods
     sdrop: 0.3
-    battndim: 256
     biasing: true
     freeze_enc_dec: true
     biasing_type: 'contextualbiasing'
-    sampling_type: 'framelevel_qsampling'
+    sampling_type: 'fuzzy'
 
 frontend_conf:
     n_fft: 512
@@ -58,7 +56,7 @@ num_workers: 8
 batch_type: numel
 batch_bins: 1500000
 accum_grad: 32
-max_epoch: 200
+max_epoch: 100
 patience: none
 init: none
 best_model_criterion:
@@ -70,8 +68,7 @@ use_amp: false
 
 optim: adam
 optim_conf:
-    lr: 0.002
-    # weight_decay: 0.000001
+    lr: 0.0015
 scheduler: warmuplr
 scheduler_conf:
     warmup_steps: 15000

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from local.utils import read_file
 from local.utils import read_pickle
 from local.utils import write_json
+from local.utils import read_json
 from local.utils import write_file
 from local.utils import write_pickle
 
@@ -27,6 +28,7 @@ from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
 
 import random
+from phonemizer import phonemize
 
 seed = 12
 random.seed(seed)
@@ -34,6 +36,16 @@ torch.manual_seed(seed)
 np.random.seed(seed)
 
 debug_path = './local/prototype/debug/test'
+
+def get_pho(texts):
+    phn = phonemize(
+        texts,
+        language='en-us',
+        backend='festival',
+        preserve_punctuation=True,
+        njobs=10
+    )
+    return phn
 
 def distance(a, b):
     return fuzz.ratio(a, b) / 100
@@ -62,10 +74,23 @@ def encode_biasword(model, bpemodel, bwords):
 
 def sample_static_negative(words, bwords, k=5):
     idxs = []
+    try:
+        pho_bwords = read_json('./pho_bwords.json')
+        print('read successful!')
+    except:
+        print('read faild!')
+        pho_bwords = get_pho(bwords)
+        write_json('./pho_bwords.json', pho_bwords)
+    bword2pho = {bwords[i]: pho_bwords[i] for i in range(len(bwords))}
+
     for word in words:
-        score = torch.tensor([distance(word, bword) for bword in bwords if bword != word])
+        pho_word = get_pho(word)
+        score = torch.tensor([distance(pho_word, bword2pho[bword]) for bword in bwords if bword != word])
         idx   = torch.argsort(score, descending=True)[:k]
         idxs.append(idx)
+    print(f'idxs: {idxs}')
+    if len(idxs) < 2:
+        return idxs[0]
     return torch.cat(idxs, dim=0)
 
 def sample_flevel_negative(encoder_out, bword_embeds):
@@ -76,7 +101,7 @@ def sample_flevel_negative(encoder_out, bword_embeds):
     indexis  = faiss.IndexFlatIP(cb_proj.shape[-1])
     indexis.add(cb_proj)
 
-    D, I        = indexis.search(enc_proj, 1)
+    D, I        = indexis.search(enc_proj, 2)
     exhaust_idx = torch.from_numpy(I.reshape(-1))
     exhaust_idx = torch.unique(exhaust_idx, sorted=False)
     return exhaust_idx
@@ -187,8 +212,8 @@ def get_biasingword(tokens):
 def plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, cb_labels, uttid='test'):
     Color  = ["#4C72B0", "#FFA500", "#008000", "#808080", "#E377C2", "#17BECF", "#BCBD22", "#FF0000", ]
     Shape  = ['o', '^', 's', 'D', '*', 'p', 'h', 'x']
-    # plt.rcParams.update({'font.size': 6})
-    plt.rcParams.update({'font.size': 2})
+    plt.rcParams.update({'font.size': 6})
+    # plt.rcParams.update({'font.size': 2})
 
     # unit vector
     # enc_embeds = torch.mean(enc_embeds[16:21, :], dim=0).unsqueeze(0)
@@ -279,11 +304,13 @@ def plot_attention_map(
     ]
     print(f'xlabels: {len(xlabels)}')
 
-    plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, labels)
-    labels = [f'{labels[i]} {int(cb_class[i])}' for i in range(len(labels))]
+    # plot_tsne(model, enc_embeds, cb_embeds, cb_class, cb_types, labels)
+    # labels = [f'{labels[i]} {int(cb_class[i])}' for i in range(len(labels))]
+    labels = [f'{labels[i]}' for i in range(len(labels))]
+    plt.rcParams.update({'font.size': 8})
 
     # draw attention map
-    fig, axes = plt.subplots(1, 1, figsize=(10, 27))
+    fig, axes = plt.subplots(1, 1, figsize=(8, 2))
     axes.xaxis.set_ticks(np.arange(0, attention.shape[1], 1))
     axes.yaxis.set_ticks(np.arange(0, attention.shape[0], 1))
     axes.set_xticks(np.arange(-.5, attention.shape[1], 10), minor=True)
@@ -310,21 +337,21 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
 
     # real baising words
     utt_bwords  = get_biasingword(tokens)
+    print(f'utt_bword: {utt_bwords}')
     utt_idx     = torch.tensor([bword2idx[bword] for bword in utt_bwords])
     print(f'utt_idx: {utt_idx}')
     
     # exhausted biasing words
-    exhaust_num = 1
     exhaust_idx = sample_flevel_negative(encoder_out, bword_embeds)
     print(f'exhaust_idx: {exhaust_idx}')
 
     # random baising words
-    rand_num = exhaust_idx.shape[0]
+    rand_num = 5
     rand_idx = torch.randint(len(bwords) - 1, (rand_num, ))
     print(f'rand_idx: {rand_idx}')
-
     # static baising words
-    static_idx = sample_static_negative(text.split(' '), bwords, k=1)
+    static_idx = sample_static_negative(text.split(' '), bwords, k=5)
+    # static_idx = sample_static_negative(utt_bwords, bwords, k=5)
     print(f'static_idx: {static_idx}')
     print(f'static_idx: {static_idx.shape}')
 
@@ -345,7 +372,7 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
     # contextual biasing embeddings
     idxs  = [
         utt_idx.to(torch.long), 
-        rand_idx.to(torch.long), 
+        # rand_idx.to(torch.long), 
         static_idx.to(torch.long), 
         # exhaust_idx.to(torch.long), 
         # cluster_idx.to(torch.long), 
@@ -354,7 +381,7 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
     ]
     types = [
         'real biasing words', 
-        'random biasing words', 
+        # 'random biasing words', 
         'static biasing words', 
         # 'frame-level biasing words(exhaust)',
         # 'frame-level biasing words(query-cluster)',
@@ -410,15 +437,14 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
 if __name__ == "__main__":
     spm_path   = "./data/en_token_list/bpe_unigram600suffix/bpe.model"
     token_path = "./data/en_token_list/bpe_unigram600suffix/tokens.txt"
-    model_conf = "./conf/tuning/train_rnnt_freeze_contextual_biasing.yaml"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_suffix/valid.loss.ave_10best.pth"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_sdrop_suffix/valid.loss.ave_10best.pth"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_FL_suffix/valid.loss.best.pth"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_suffix/56epoch.pth"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_FL_debug_suffix/valid.loss.best.pth"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_FL_warmup_suffix/latest.pth"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_FL_warmup_suffix/valid.loss.best.pth"
-    model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_QSamlping_suffix/latest.pth"
+    # model_conf = "./conf/tuning/train_rnnt_freeze_contextual_biasing.yaml"
+    model_conf = "./conf/exp/train_rnnt_freeze_cb.yaml"
+    model_path = "./exp/asr_finetune_freeze_ct_enc_cb_suffix/valid.loss.47epoch.pth"
+    # model_path = "./exp/asr_finetune_freeze_ct_enc_cb_suffix/valid.loss.ave_10best.pth"
+    # model_path = "./exp/asr_finetune_freeze_ct_enc_cb_with_q_hnp_suffix/valid.loss.ave_10best.pth"
+    # model_path = "./exp/asr_finetune_freeze_ct_enc_cb_with_q_hnp_suffix/valid.loss.best.pth"
+    # model_path = "./exp/asr_finetune_freeze_ct_enc_cb_with_ANN_hnp_warmup_small_lr_suffix/valid.loss.best.pth"
+    
     stats_path = "./exp/asr_stats_raw_en_bpe600_spsuffix/train/feats_stats.npz"
     rare_path  = "./local/rareword_f15.txt"
     scp_path   = "./data/train_clean_100/wav.scp"
@@ -444,6 +470,8 @@ if __name__ == "__main__":
     encs = []
     enc_lengths = []
     
+    model.eval()
+    model.bprocessor.maxlen = 20
     for idx, audio_path, text in wavscp:
         if idx != "1963-142776-0027":
             continue

@@ -9,9 +9,9 @@ train_set="train_clean_100"
 valid_set="dev"
 test_sets="test_clean"
 
-asr_config=conf/tuning/train_rnnt_freeze_contextual_biasing_sampling_FL_Qsampling.yaml
+asr_config=conf/tuning/train_rnnt_freeze_contextual_biasing_sampling_FL_Qsampling_debug.yaml
 inference_config=conf/decode_asr.yaml
-asr_tag=finetune_freeze_conformer_transducer_contextual_biasing_proj_QSamlping
+asr_tag=finetune_freeze_conformer_transducer_contextual_biasing_proj_QSamlping_debug
 
 pretrained_model=/share/nas165/amian/experiments/speech/tcpgen/espnet/egs2/librispeech_100/asr1/exp/asr_train_asr_transducer_conformer_e15_linear1024_raw_en_bpe600_use_wandbtrue_sp_suffix/valid.loss.ave_10best.pth
 # pretrained_model=/share/nas165/amian/experiments/speech/tcpgen/espnet/egs2/librispeech_100/asr1_biasing/exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_suffix/114epoch.pth

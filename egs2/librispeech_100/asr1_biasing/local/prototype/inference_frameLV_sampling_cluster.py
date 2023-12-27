@@ -40,10 +40,10 @@ np.random.seed(seed)
 # clustering methods
 bits       = 64
 hash_bias  = True
-clusters   = 10
+clusters   = 5
 iterations = 10
 
-debug_path = './local/prototype/debug/test'
+debug_path = './local/prototype/debug/cluster_visual'
 
 def distance(a, b):
     return fuzz.ratio(a, b) / 100
@@ -224,10 +224,10 @@ def get_biasingword(tokens):
     return [''.join(word).replace('▁', '') for word in biasingwords]
 
 def plot_tsne(model, enc_embeds, cb_embeds, q_class, cb_class, cb_types, cb_labels, uttid='test'):
-    Color  = ["#4C72B0", "#FFA500", "#008000", "#808080", "#E377C2", "#17BECF", "#BCBD22", "#FF0000", "#132043", "#1F4172", "#F1B4BB", "#7ED7C1"]
+    Color  = ["#E377C2", "#FFA500", "#008000", "#808080", "#4C72B0", "#17BECF", "#BCBD22", "#FF0000", "#132043", "#1F4172", "#F1B4BB", "#7ED7C1"]
     Shape  = ['o', '^', 's', 'D', '*', 'p', 'h', 'x']
-    # plt.rcParams.update({'font.size': 6})
-    plt.rcParams.update({'font.size': 2})
+    plt.rcParams.update({'font.size': 8})
+    # plt.rcParams.update({'font.size': 2})
 
     # unit vector
     # enc_embeds = torch.mean(enc_embeds[16:21, :], dim=0).unsqueeze(0)
@@ -253,43 +253,57 @@ def plot_tsne(model, enc_embeds, cb_embeds, q_class, cb_class, cb_types, cb_labe
     colors = [Color[c.item()] for c in C]
     shapes = [Shape[c.item()] for c in _C]
     label  = [(['encoder outputs'] + cb_types)[c.item()] for c in _C]
-    tsne = TSNE(n_components=2, verbose=1, random_state=123)
+    tsne = TSNE(n_components=2, verbose=1, perplexity=10)
     X = tsne.fit_transform(X.detach())
-    X = X[:enc_embeds.shape[0] + cb_embeds.shape[0]]
+    # X = X[:enc_embeds.shape[0] + cb_embeds.shape[0]]
+    X = X[:enc_embeds.shape[0]]
 
     label_hited = []
-    for i in range(X.shape[0] - 1, 0, -1):
-        if label[i] not in label_hited:
+    plt.figure(figsize=(5, 5))
+    plt.tick_params(
+        left=False, 
+        right=False, 
+        labelleft=False, 
+        labelbottom=False, 
+        bottom=False
+    ) 
+    counter = 1
+    for i in range(X.shape[0]):
+        # if label[i] not in label_hited:
+        if C[i] not in label_hited:
             plt.scatter(
                 x=X[i, 0], 
                 y=X[i, 1], 
                 c=colors[i], 
-                s=2, 
-                # s=5, 
+                # s=2, 
+                s=20, 
                 marker=shapes[i],
-                label=label[i]
+                # label=label[i]
+                label=f'Group {counter}'
             )
-            label_hited.append(label[i])
+            # label_hited.append(label[i])
+            label_hited.append(C[i].item())
+            counter += 1
         else:
             plt.scatter(
                 x=X[i, 0], 
                 y=X[i, 1], 
                 c=colors[i], 
-                s=2, 
-                # s=5, 
+                # s=2, 
+                s=20, 
                 marker=shapes[i],
             )
         
     texts = []
-    # for i in range(enc_embeds.shape[0]):
-    #     x, y = X[i, 0], X[i, 1]
-    #     texts.append(plt.text(x, y, i))
-    # start = enc_embeds.shape[0]
+    for i in range(enc_embeds.shape[0]):
+        x, y = X[i, 0], X[i, 1]
+        texts.append(plt.text(x, y, i))
+    start = enc_embeds.shape[0]
     # for i in range(cb_embeds.shape[0]):
     #     x, y = X[start + i, 0], X[start + i, 1]
     #     texts.append(plt.text(x, y, cb_labels[i]))
     plt.legend()
-    # adjust_text(texts)
+    adjust_text(texts)
     output_path = os.path.join(debug_path, f'{uttid}_tsne.pdf')
     plt.savefig(output_path, format="pdf", bbox_inches="tight")
     plt.clf()
@@ -466,11 +480,14 @@ def forward(model, bpemodel, speech, text, bwords, bword_embeds):
 if __name__ == "__main__":
     spm_path   = "./data/en_token_list/bpe_unigram600suffix/bpe.model"
     token_path = "./data/en_token_list/bpe_unigram600suffix/tokens.txt"
-    model_conf = "./conf/tuning/train_rnnt_freeze_contextual_biasing_sampling.yaml"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_suffix/valid.loss.ave_10best.pth"
-    model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_sdrop_suffix/valid.loss.ave_10best.pth"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_FL_suffix/valid.loss.best.pth"
-    # model_path = "./exp/asr_finetune_freeze_conformer_transducer_contextual_biasing_proj_sampling_suffix/56epoch.pth"
+    # model_conf = "./conf/tuning/train_rnnt_freeze_contextual_biasing.yaml"
+    model_conf = "./conf/exp/train_rnnt_freeze_cb_Q_HNP_small_lr.yaml"
+    model_path = "./exp/asr_finetune_freeze_ct_enc_cb_suffix/valid.loss.47epoch.pth"
+    # model_path = "./exp/asr_finetune_freeze_ct_enc_cb_suffix/valid.loss.ave_10best.pth"
+    # model_path = "./exp/asr_finetune_freeze_ct_enc_cb_with_q_hnp_suffix/valid.loss.ave_10best.pth"
+    # model_path = "./exp/asr_finetune_freeze_ct_enc_cb_with_q_hnp_suffix/valid.loss.best.pth"
+    # model_path = "./exp/asr_finetune_freeze_ct_enc_cb_with_ANN_hnp_warmup_small_lr_suffix/valid.loss.best.pth"
+    
     stats_path = "./exp/asr_stats_raw_en_bpe600_spsuffix/train/feats_stats.npz"
     rare_path  = "./local/rareword_f15.txt"
     scp_path   = "./data/train_clean_100/wav.scp"
